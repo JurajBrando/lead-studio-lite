@@ -166,7 +166,8 @@ def sync():
         counts["senders"] = _store("senders", sender_rows)
     _save({"last_sync": db.now(), "last_counts": counts})
     db.event("manyreach", "API sync: %s" % ", ".join("%s %d" % item for item in counts.items()))
-    result = {"ok": True, "counts": counts, "errors": errors}
+    imported = import_into_app()
+    result = {"ok": True, "counts": counts, "errors": errors, "imported": imported}
     return result
 
 
@@ -178,5 +179,100 @@ def status():
             "connected_at": int(block.get("connected_at") or 0),
             "last_sync": int(block.get("last_sync") or 0),
             "counts": counts,
+            "in_app": {"mailboxes": db.scalar(
+                            "SELECT COUNT(*) FROM mailboxes WHERE source='manyreach'"),
+                       "sequences": db.scalar(
+                            "SELECT COUNT(*) FROM sequences WHERE name LIKE '[MR] %'")},
             "base_url": BASE,
             "docs": "https://app.manyreach.com/api#v2"}
+
+
+# ------------------------------------------------------- into the app itself
+def _text_of(value):
+    """The campaign body is HTML; a sequence step is plain text."""
+    import html as html_mod
+    import re as re_mod
+    text = re_mod.sub(r"<br\s*/?>|</p>|</div>", "\n", value or "", flags=re_mod.I)
+    text = re_mod.sub(r"<[^>]+>", "", text)
+    text = html_mod.unescape(text)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _smtp_security(port):
+    if int(port or 0) == 465:
+        return "ssl"
+    if int(port or 0) == 25:
+        return "none"
+    return "starttls"
+
+
+def import_into_app():
+    """Senders become mailboxes, campaigns become one-step sequences.
+
+    Both keep their Manyreach mark in the name (`[MR]` for sequences) or the `source` column
+    (mailboxes), so a second import never duplicates them, and a mailbox with no password is
+    created inactive - it is visible and editable, but the send queue will not touch it until
+    the password is filled in.
+    """
+    rows = db.rows("SELECT kind, payload FROM mcp_items WHERE connection=?", (BLOCK,))
+    known_boxes = {str(row["from_email"] or "").lower() for row in db.rows("SELECT from_email FROM mailboxes")}
+    known_sequences = {str(row["name"] or "").lower() for row in db.rows("SELECT name FROM sequences")}
+    added_boxes = skipped_boxes = no_password = inactive = 0
+    added_sequences = skipped_sequences = 0
+    now = db.now()
+    for row in rows:
+        try:
+            item = json.loads(row["payload"] or "{}")
+        except ValueError:
+            continue
+        if row["kind"] == "senders":
+            email = str(item.get("email") or "").strip().lower()
+            if not email or email in known_boxes:
+                skipped_boxes += 1
+                continue
+            smtp_port = int(item.get("customSmtpPort") or 587)
+            password = ""            # the API never returns it
+            active = 0 if item.get("disconnected") else 1
+            if not password:
+                no_password += 1
+                active = 0
+            db.insert("mailboxes", {
+                "name": (item.get("fromName") or email)[:80],
+                "from_name": str(item.get("fromName") or "")[:120],
+                "from_email": email, "reply_to": str(item.get("replyTo") or "")[:200],
+                "smtp_host": str(item.get("customSmtpServer") or "")[:200],
+                "smtp_port": smtp_port, "smtp_security": _smtp_security(smtp_port),
+                "smtp_user": str(item.get("customSmtpUsername") or email)[:200],
+                "smtp_pass": password,
+                "imap_host": str(item.get("customImapServer") or "")[:200],
+                "imap_port": int(item.get("customImapPort") or 993),
+                "imap_user": str(item.get("customImapUsername") or email)[:200],
+                "imap_pass": password,
+                "daily_limit": int(item.get("dailyLimit") or 30),
+                "signature": str(item.get("signature") or "")[:4000],
+                "active": active, "last_send_ts": 0, "created_ts": now,
+                "auth_type": "password", "source": "manyreach"})
+            known_boxes.add(email)
+            added_boxes += 1
+            inactive += 1 if not active else 0
+        elif row["kind"] == "campaigns":
+            name = str(item.get("name") or "").strip()
+            if not name:
+                skipped_sequences += 1
+                continue
+            label = ("[MR] " + name)[:120]
+            if label.lower() in known_sequences:
+                skipped_sequences += 1
+                continue
+            sequence_id = db.insert("sequences", {"name": label, "created_ts": now, "active": 1})
+            db.insert("steps", {
+                "sequence_id": sequence_id, "step_no": 1, "delay_days": 0,
+                "subject": str(item.get("subject") or name)[:200],
+                "body": _text_of(item.get("body"))[:8000]})
+            known_sequences.add(label.lower())
+            added_sequences += 1
+    if added_boxes or added_sequences:
+        db.event("manyreach", "imported %d mailboxes, %d sequences" % (added_boxes, added_sequences))
+    return {"ok": True, "mailboxes": added_boxes, "mailboxes_skipped": skipped_boxes,
+            "mailboxes_without_password": no_password, "sequences": added_sequences,
+            "sequences_skipped": skipped_sequences}

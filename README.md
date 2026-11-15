@@ -102,7 +102,10 @@ inbox permissions, or anyone looking for a managed data vendor.
   are shown in the card. Any other MCP server can be added with a URL and an optional token.
   See [docs/MCP.md](docs/MCP.md#the-other-direction-mcp-servers-this-app-calls).
 - **Manyreach REST API** — the same card takes a Manyreach API key (`X-API-Key`, 1000 rows a
-  page) and syncs the whole account: every campaign and every sender, not the first page.
+  page) and syncs the whole account: every campaign and every sender, not the first page. The
+  campaign and sender data can then be **pushed into the app itself** — each sender becomes a
+  mailbox (with its SMTP/IMAP host, port, daily limit and signature, inactive until you add the
+  password) and each campaign becomes a one-step sequence marked `[MR]`.
 - **Social tab** — make a short video from a title, an audio track and one picture (or a source
   video), then plan, schedule and measure it through Metricool: a unified inbox, a content
   calendar, the Meta/Google/TikTok ad panels and the reporting cards. See [docs/SOCIAL.md](docs/SOCIAL.md).

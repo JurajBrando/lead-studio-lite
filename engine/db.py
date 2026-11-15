@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     signature     TEXT DEFAULT '',
     active        INTEGER DEFAULT 1,
     last_send_ts  INTEGER DEFAULT 0,
-    created_ts    INTEGER DEFAULT 0
+    created_ts    INTEGER DEFAULT 0,
+    auth_type     TEXT DEFAULT 'password',
+    source        TEXT DEFAULT ''
 );
 
 """ + LEADS_DDL + """
@@ -395,6 +397,7 @@ def _migrate(c):
                   ("company_size", "TEXT DEFAULT ''"),
                   ("technologies", "TEXT DEFAULT ''")],
         "mailboxes": [("auth_type", "TEXT DEFAULT 'password'"),
+                      ("source", "TEXT DEFAULT ''"),
                       ("oauth_provider", "TEXT DEFAULT ''"),
                       ("oauth_refresh", "TEXT DEFAULT ''"),
                       ("oauth_access", "TEXT DEFAULT ''"),

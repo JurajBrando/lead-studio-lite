@@ -1,3 +1,28 @@
+## [1.19.0] - 2026-11-15
+
+What you download lands in the app: senders become mailboxes, campaigns become sequences.
+
+### Added
+
+- **Manyreach senders → Mailboxes.** One mailbox per sender, with its SMTP and IMAP host, port,
+  username, daily limit and signature, marked `source='manyreach'`. The API never returns a
+  password, so those mailboxes are created **inactive** — visible and editable, but skipped by the
+  send queue and the rotation — until you paste the password; a sender Manyreach reports as
+  disconnected is never activated.
+- **Manyreach campaigns → Sequences.** Each campaign becomes a `[MR] <name>` sequence with one step
+  holding its subject and its body, with the HTML flattened to text.
+- The import runs automatically after a sync (`POST /api/manyreach/sync`, and `/api/mcp/pull` for
+  the MCP path); `POST /api/manyreach/import` re-runs it for data already downloaded. The card
+  reports how many mailboxes and sequences came from Manyreach and how many still need a password.
+- **Spintax.** `{|Hi|Hello|}` is resolved to one option when the message is merged, so imported
+  Manyreach subjects and bodies no longer go out with the braces intact.
+
+### Tests
+
+394 (was 390): a sender becoming a mailbox with its servers, an inactive mailbox without a password,
+a disconnected sender, a campaign becoming a one-step sequence with text rather than HTML, a second
+import adding nothing, an existing address left untouched, and spintax both ways.
+
 ## [1.18.0] - 2026-11-15
 
 Daily moved to the top, and wired to what you sell.

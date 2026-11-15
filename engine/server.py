@@ -251,7 +251,13 @@ def r_mcp_pull(p):
         return {"ok": False, "error": str(exc)}
     if answer.get("ok"):
         answer["items"] = mcp_client.items(str(p.get("name") or ""))
+        if str(p.get("name") or "") == "manyreach":
+            answer["imported"] = manyreach_api.import_into_app()
     return answer
+
+
+def r_manyreach_import(p=None):
+    return manyreach_api.import_into_app()
 
 
 def r_mcp_items(q):
@@ -1450,6 +1456,7 @@ ROUTES_POST = {
     "/api/mcp/custom": r_mcp_custom,
     "/api/manyreach/key": r_manyreach_key,
     "/api/manyreach/sync": r_manyreach_sync,
+    "/api/manyreach/import": r_manyreach_import,
     "/api/mcp/disconnect": r_mcp_disconnect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,

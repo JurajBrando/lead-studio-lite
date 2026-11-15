@@ -1559,6 +1559,14 @@
            num((mr.counts || {}).senders || 0) + ' senders stored' +
            (mr.last_sync ? ' · last sync ' + fmtWhen(mr.last_sync) : ''))
         : 'No API key yet.') + '</div>' +
+      '<div class="small dim" style="margin-top:6px">' +
+      ((mr.in_app && (mr.in_app.mailboxes || mr.in_app.sequences))
+        ? 'In the app: <strong>' + num(mr.in_app.mailboxes) + ' mailboxes</strong> and <strong>' +
+          num(mr.in_app.sequences) + ' sequences</strong> came from Manyreach. '
+        : '') +
+      (((mr.counts || {}).senders || (mr.counts || {}).campaigns)
+        ? '<button class="btn sm" data-act="mr-import">Put senders in Mailboxes, campaigns in Sequences</button>'
+        : '') + '</div>' +
       '<div class="sep"></div><div class="row">' +
       '<div class="field"><label>Add another MCP server</label>' +
       '<input type="text" id="mcp-name" placeholder="Instantly"></div>' +
@@ -2446,8 +2454,20 @@
       call('/api/manyreach/sync', {}).then(function (r) {
         if (!r.ok) return toast(r.error || 'The sync failed', 'err');
         var counts = r.counts || {};
-        toast(num(counts.campaigns || 0) + ' campaigns, ' + num(counts.senders || 0) + ' senders');
+        var imported = r.imported || {};
+        toast(num(counts.campaigns || 0) + ' campaigns, ' + num(counts.senders || 0) +
+          ' senders · put ' + num(imported.mailboxes || 0) + ' in Mailboxes and ' +
+          num(imported.sequences || 0) + ' in Sequences');
         refresh().then(function () { renderMcpItems('manyreach', r.items || []); });
+      });
+    },
+    'mr-import': function () {
+      call('/api/manyreach/import', {}).then(function (r) {
+        if (!r.ok) return toast(r.error || 'The import failed', 'err');
+        toast(num(r.mailboxes) + ' mailboxes, ' + num(r.sequences) + ' sequences added' +
+          (r.mailboxes_without_password
+            ? ' · ' + num(r.mailboxes_without_password) + ' need the SMTP password' : ''));
+        refresh();
       });
     },
     'mcp-add': function () {

@@ -8,6 +8,7 @@ import email.header
 import email.utils
 import html as html_mod
 import imaplib
+import random
 import re
 import smtplib
 import ssl
@@ -18,6 +19,7 @@ from . import oauth
 
 EMAIL_RX = re.compile(r"^[^@\s,;<>]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 VAR_RX = re.compile(r"\{\{\s*([A-Za-z0-9_ .\-]+?)\s*(?:\|([^}]*))?\}\}")
+SPINTAX_RX = re.compile(r"\{\|([^{}|]*\|[^{}]*)\|\}")
 URL_RX = re.compile(r"https?://[^\s<>\"')]+", re.I)
 AUTOREPLY_RX = re.compile(
     r"(out of (the )?office|automatic(al)? repl|auto[- ]?reply|autoreply|vacation|abwesenheit|"
@@ -36,9 +38,10 @@ def valid_email(addr):
 
 # --------------------------------------------------------------- templates
 def merge(text, fields):
-    """Replace {{field}} / {{field|fallback}}. Returns (text, missing_fields)."""
+    """Replace {{field}} / {{field|fallback}}, then resolve any spintax. Returns (text, missing)."""
     missing = []
     f = {str(k).strip().lower(): v for k, v in (fields or {}).items()}
+    text = spin(text)
 
     def sub(m):
         key = m.group(1).strip().lower().replace(" ", "_")
@@ -52,6 +55,14 @@ def merge(text, fields):
         return ""
 
     return VAR_RX.sub(sub, text or ""), missing
+
+
+def spin(text):
+    """`{|Hi|Hello|}` -> one of the options, at random. Spintax, as Manyreach and others use it."""
+    def choose(match):
+        options = [part.strip() for part in match.group(1).split("|") if part.strip()]
+        return random.choice(options) if options else ""
+    return SPINTAX_RX.sub(choose, text or "")
 
 
 def lead_fields(lead):
