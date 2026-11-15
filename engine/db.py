@@ -10,6 +10,46 @@ import time
 
 from . import config
 
+# The leads table is defined from one list so a migration can rebuild it from the same
+# source of truth. `email` is optional: a contact can be a company row with a description
+# and no address, and several such rows have to be allowed (hence the partial index).
+LEAD_COLUMNS = [
+    ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("email", "TEXT DEFAULT '' COLLATE NOCASE"),
+    ("first_name", "TEXT DEFAULT ''"),
+    ("last_name", "TEXT DEFAULT ''"),
+    ("company", "TEXT DEFAULT ''"),
+    ("title", "TEXT DEFAULT ''"),
+    ("domain", "TEXT DEFAULT ''"),
+    ("phone", "TEXT DEFAULT ''"),
+    ("city", "TEXT DEFAULT ''"),
+    ("country", "TEXT DEFAULT ''"),
+    ("industry", "TEXT DEFAULT ''"),
+    ("description", "TEXT DEFAULT ''"),
+    ("linkedin", "TEXT DEFAULT ''"),
+    ("website", "TEXT DEFAULT ''"),
+    ("notes", "TEXT DEFAULT ''"),
+    ("source", "TEXT DEFAULT ''"),
+    ("tags", "TEXT DEFAULT ''"),
+    ("status", "TEXT DEFAULT 'new'"),
+    ("verify_status", "TEXT DEFAULT 'unverified'"),
+    ("verify_detail", "TEXT DEFAULT ''"),
+    ("created_ts", "INTEGER DEFAULT 0"),
+    ("updated_ts", "INTEGER DEFAULT 0"),
+    ("last_contact_ts", "INTEGER DEFAULT 0"),
+    ("replied_ts", "INTEGER DEFAULT 0"),
+]
+LEAD_FIELD_NAMES = [name for name, _ in LEAD_COLUMNS if name != "id"]
+
+LEADS_DDL = "CREATE TABLE IF NOT EXISTS %s (\n%s\n);" % (
+    "leads", ",\n".join("    %s %s" % (name, ddl) for name, ddl in LEAD_COLUMNS))
+LEADS_INDEXES = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email) WHERE email <> '';
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
+CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company COLLATE NOCASE);
+"""
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -36,33 +76,7 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     created_ts    INTEGER DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS leads (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    email          TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    first_name     TEXT DEFAULT '',
-    last_name      TEXT DEFAULT '',
-    company        TEXT DEFAULT '',
-    title          TEXT DEFAULT '',
-    domain         TEXT DEFAULT '',
-    phone          TEXT DEFAULT '',
-    city           TEXT DEFAULT '',
-    country        TEXT DEFAULT '',
-    industry       TEXT DEFAULT '',
-    linkedin       TEXT DEFAULT '',
-    website        TEXT DEFAULT '',
-    notes          TEXT DEFAULT '',
-    source         TEXT DEFAULT '',
-    tags           TEXT DEFAULT '',
-    status         TEXT DEFAULT 'new',
-    verify_status  TEXT DEFAULT 'unverified',
-    verify_detail  TEXT DEFAULT '',
-    created_ts     INTEGER DEFAULT 0,
-    updated_ts     INTEGER DEFAULT 0,
-    last_contact_ts INTEGER DEFAULT 0,
-    replied_ts     INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
-CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
+""" + LEADS_DDL + """
 
 CREATE TABLE IF NOT EXISTS lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,7 +295,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     last_test_ts INTEGER DEFAULT 0,
     last_test_ok INTEGER DEFAULT 0
 );
-"""
+""" + LEADS_INDEXES
 
 _local = threading.local()
 
@@ -307,11 +321,61 @@ def init_db():
     return c
 
 
+def _leads_shape(c):
+    try:
+        return {row[1]: row for row in c.execute("PRAGMA table_info(leads)").fetchall()}
+    except sqlite3.Error:
+        return {}
+
+
+def _rebuild_leads(c, db_path=None):
+    """Copy an old leads table into the current shape.
+
+    SQLite cannot drop a NOT NULL or a UNIQUE constraint in place. The old table made the
+    address mandatory and unique, so only one contact could ever have none; the new one has
+    a partial unique index instead. Ids are preserved (enrollments, sends and replies point
+    at them) and foreign keys are off for the swap, so dropping the old table cannot
+    cascade-delete anything.
+    """
+    columns = _leads_shape(c)
+    path = db_path or config.DB_PATH
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    backup = ""
+    try:
+        candidate = "%s.bak-%s" % (path, stamp)
+        destination = sqlite3.connect(candidate)
+        with destination:
+            c.backup(destination)
+        destination.close()
+        backup = candidate
+    except (sqlite3.Error, OSError):
+        backup = ""
+    c.commit()
+    c.execute("PRAGMA foreign_keys=OFF")
+    keep = [name for name in LEAD_FIELD_NAMES if name in columns]
+    c.execute("DROP TABLE IF EXISTS leads_migrate")
+    c.execute(LEADS_DDL.replace("leads (", "leads_migrate (", 1))
+    if keep:
+        c.execute("INSERT INTO leads_migrate (%s) SELECT %s FROM leads" % (
+            ", ".join(keep), ", ".join(keep)))
+    c.execute("DROP TABLE leads")
+    c.execute("ALTER TABLE leads_migrate RENAME TO leads")
+    c.executescript(LEADS_INDEXES)
+    c.execute("PRAGMA foreign_keys=ON")
+    c.commit()
+    return backup
+
+
 def _migrate(c):
-    """Add columns introduced after a database was first created."""
+    """Bring an older database up to the current shape."""
+    shape = _leads_shape(c)
+    if shape and shape.get("email") and shape["email"][3]:
+        backup = _rebuild_leads(c)
+        config.log("leads table rebuilt (email is optional now); backup: %s" % (backup or "none"))
     additions = {
         "offers": [("disclosure", "TEXT DEFAULT ''")],
         "sends": [("attempts", "INTEGER DEFAULT 0")],
+        "leads": [("description", "TEXT DEFAULT ''")],
         "mailboxes": [("auth_type", "TEXT DEFAULT 'password'"),
                       ("oauth_provider", "TEXT DEFAULT ''"),
                       ("oauth_refresh", "TEXT DEFAULT ''"),
@@ -364,6 +428,19 @@ def insert(table, data):
         table, ", ".join(keys), ", ".join("?" for _ in keys))
     cur = execute(sql, [data[k] for k in keys])
     return cur.lastrowid
+
+
+def insert_many(table, rows):
+    """One transaction for a whole batch. A per-row commit makes a 50k import crawl."""
+    if not rows:
+        return 0
+    keys = list(rows[0].keys())
+    sql = "INSERT INTO %s (%s) VALUES (%s)" % (
+        table, ", ".join(keys), ", ".join("?" for _ in keys))
+    c = conn()
+    c.executemany(sql, [[row.get(k) for k in keys] for row in rows])
+    c.commit()
+    return len(rows)
 
 
 def update(table, row_id, data):

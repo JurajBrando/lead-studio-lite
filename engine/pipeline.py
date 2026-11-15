@@ -104,7 +104,9 @@ def enroll(sequence_id, lead_ids, mailbox_id=0, start_now=True):
     added = skipped = 0
     for lead_id in lead_ids:
         lead = db.one("SELECT * FROM leads WHERE id=?", (lead_id,))
-        if not lead or db.is_suppressed(lead["email"]) or lead["status"] in ("unsubscribed", "bounced"):
+        if (not lead or not (lead["email"] or "").strip()
+                or db.is_suppressed(lead["email"])
+                or lead["status"] in ("unsubscribed", "bounced")):
             skipped += 1
             continue
         if db.one("SELECT id FROM enrollments WHERE sequence_id=? AND lead_id=? AND status='running'",
@@ -133,7 +135,8 @@ def due_enrollments(limit=20):
     return db.rows(
         "SELECT e.*, l.email, l.status AS lead_status FROM enrollments e "
         "JOIN leads l ON l.id=e.lead_id "
-        "WHERE e.status='running' AND e.next_run_ts<=? ORDER BY e.next_run_ts LIMIT ?",
+        "WHERE e.status='running' AND e.next_run_ts<=? AND l.email<>'' "
+        "ORDER BY e.next_run_ts LIMIT ?",
         (int(time.time()), limit))
 
 

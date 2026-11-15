@@ -30,3 +30,9 @@ Thumbs.db
 # Personal working copy - never commit
 PERSONAL_README.md
 _e2e/
+
+# Imported data files (the LEAD_INDEX dumps are tens of gigabytes)
+imports/
+*.parquet
+*.duckdb
+*.ddb

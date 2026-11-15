@@ -369,7 +369,7 @@
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
       '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
-      '<input type="search" id="lead-search" placeholder="Search name, company, domain or email" value="' + h(q.q) + '">' +
+      '<input type="search" id="lead-search" placeholder="Search name, company, email or description" value="' + h(q.q) + '">' +
       '</div>' +
       '<select id="lead-status" style="max-width:170px">' +
       ['', 'new', 'contacted', 'replied', 'interested', 'won', 'lost', 'bounced', 'unsubscribed']
@@ -382,8 +382,8 @@
 
     if (!q.items.length) {
       html += '<div class="card mt"><div class="empty"><div class="big">No leads here yet</div>' +
-        '<p>Drop a CSV with an <code>email</code> column in, and Lead Studio maps the rest ' +
-        '(name, company, title, domain...) automatically.</p>' +
+        '<p>Drop a CSV in and Lead Studio maps the columns automatically. An email is welcome ' +
+        'but not required: a company with a description is a contact too.</p>' +
         '<button class="btn primary" data-act="import">Import a file</button></div></div>';
       return html;
     }
@@ -402,10 +402,15 @@
         return '<tr data-lead="' + l.id + '">' +
           '<td><input type="checkbox" class="row-sel" data-id="' + l.id + '"' +
           (state.selection.has(l.id) ? ' checked' : '') + '></td>' +
-          '<td><div class="t-email">' + h(l.email) + '</div>' +
-          '<div class="t-sub">' + h([l.first_name, l.last_name].filter(Boolean).join(' ') || '—') + '</div></td>' +
-          '<td><div>' + h(l.company || '—') + '</div><div class="t-sub">' +
-          h([l.title, l.city].filter(Boolean).join(' · ') || l.domain || '') + '</div></td>' +
+          '<td><div class="t-email">' + h(l.email || l.company || '—') +
+          (l.email ? '' : ' <span class="badge grey">no email</span>') + '</div>' +
+          '<div class="t-sub">' + h([l.first_name, l.last_name].filter(Boolean).join(' ') ||
+            (l.email ? '—' : (l.title || ''))) + '</div></td>' +
+          '<td>' + (l.email
+            ? '<div>' + h(l.company || '—') + '</div><div class="t-sub">' +
+              h([l.title, l.city].filter(Boolean).join(' · ') || l.domain || '') + '</div>'
+            : '<div class="small">' + h((l.description || '—').slice(0, 90)) + '</div>' +
+              '<div class="t-sub">' + h(l.domain || '') + '</div>') + '</td>' +
           '<td>' + statusBadge(l.status) + '</td>' +
           '<td>' + verifyBadge(l.verify_status) + '</td>' +
           '<td class="small dim nowrap">' + fmtDate(l.last_contact_ts) + '</td>' +
@@ -1934,8 +1939,9 @@
     var f = lead || {};
     openModal({
       title: lead ? 'Edit lead' : 'Add a lead',
-      body: '<div class="row"><div class="field"><label>Email</label>' +
-        '<input type="email" id="lf-email" value="' + h(f.email || '') + '" placeholder="name@company.com"></div>' +
+      body: '<div class="row"><div class="field"><label>Email <span class="dim">(optional)</span></label>' +
+        '<input type="email" id="lf-email" value="' + h(f.email || '') + '" ' +
+        'placeholder="name@company.com"></div>' +
         '<div class="field"><label>Status</label><select id="lf-status">' +
         ['new', 'contacted', 'replied', 'interested', 'won', 'lost', 'bounced', 'unsubscribed'].map(function (s) {
           return '<option value="' + s + '"' + (f.status === s ? ' selected' : '') + '>' + s + '</option>';
@@ -1964,6 +1970,8 @@
         '<input type="text" id="lf-linkedin" value="' + h(f.linkedin || '') + '"></div>' +
         '<div class="field"><label>Tags</label>' +
         '<input type="text" id="lf-tags" value="' + h(f.tags || '') + '" placeholder="comma, separated"></div></div>' +
+        '<div class="field"><label>Description <span class="dim">(what the company does)</span></label>' +
+        '<textarea id="lf-description" rows="3">' + h(f.description || '') + '</textarea></div>' +
         '<div class="field"><label>Notes</label><textarea id="lf-notes" rows="2">' + h(f.notes || '') + '</textarea></div>',
       footer: '<button class="btn" data-close>Cancel</button>' +
         '<button class="btn primary" id="lf-save">' + (lead ? 'Save changes' : 'Add lead') + '</button>',
@@ -1986,6 +1994,7 @@
             industry: $('#lf-industry', root).value,
             linkedin: $('#lf-linkedin', root).value,
             tags: $('#lf-tags', root).value,
+            description: $('#lf-description', root).value,
             notes: $('#lf-notes', root).value
           };
           call('/api/lead/save', body).then(function (r) {
@@ -1999,20 +2008,74 @@
   function editLead(id) { leadForm(id); }
 
   // ---- import
+  function impCallout(r) {
+    if (!r.ok) {
+      return '<div class="callout" style="border-left-color:var(--red)"><strong>Import failed.</strong> ' +
+        h(r.error || 'Unknown error') + '</div>';
+    }
+    return '<div class="callout green"><strong>' + num(r.imported) + ' new contacts imported.</strong> ' +
+      (r.no_email ? num(r.no_email) + ' of them have no email yet. ' : '') +
+      (r.existing_email ? num(r.existing_email) + ' already existed. ' : '') +
+      (r.duplicates ? num(r.duplicates) + ' duplicate rows in the file. ' : '') +
+      (r.invalid ? num(r.invalid) + ' invalid addresses. ' : '') +
+      (r.updated ? num(r.updated) + ' existing leads updated. ' : '') +
+      (r.skipped_blank ? num(r.skipped_blank) + ' rows had nothing to identify them. ' : '') +
+      (r.stopped_at_limit ? 'Stopped at the row limit. ' : '') +
+      '<div class="small dim" style="margin-top:6px">Mapped: ' +
+      h(Object.keys(r.mapped || {}).join(', ') || 'nothing') +
+      (r.table ? ' &middot; table: ' + h(r.table) : '') +
+      (r.examined ? ' &middot; ' + num(r.examined) + ' rows read' : '') + '</div></div>';
+  }
+
   function importModal() {
     openModal({
-      title: 'Import leads',
-      subtitle: 'CSV, TSV, Excel, Parquet, DuckDB or SQLite. One email column is all that is required.',
-      body: '<div class="drop" id="drop"><div class="big">Drop a file here</div>' +
-        '<div class="small">or click to choose a .csv, .tsv or .xlsx file</div>' +
+      title: 'Import contacts',
+      subtitle: 'CSV, TSV, Excel, Parquet, DuckDB or SQLite. An email is welcome but no longer ' +
+        'required: a company with a description is a contact too.',
+      body: '<div class="sv-tabs" style="margin-bottom:14px">' +
+        '<button class="sv-tab on" data-imp-mode="upload">Upload a file</button>' +
+        '<button class="sv-tab" data-imp-mode="path">File on this computer</button>' +
+        '</div>' +
+        '<div id="imp-upload">' +
+        '<div class="drop" id="drop"><div class="big">Drop a file here</div>' +
+        '<div class="small">or click to choose - CSV, TSV, Excel, Parquet, DuckDB, SQLite</div>' +
         '<div class="progress hidden" id="imp-progress"><div class="fill" id="imp-fill"></div></div></div>' +
+        '</div>' +
+        '<div id="imp-path" class="hidden">' +
+        '<div class="field"><label>Path on this computer</label>' +
+        '<input type="text" id="imp-path-input" placeholder="C:\\Users\\...\\leads.parquet"></div>' +
+        '<div class="toolbar"><button class="btn" id="imp-check">Check the file</button>' +
+        '<span class="small dim" id="imp-info"></span></div>' +
+        '<div id="imp-tables"></div>' +
+        '<div class="row"><div class="field"><label>Filter <span class="dim">(SQL WHERE, DuckDB ' +
+        'or SQLite only)</span></label><input type="text" id="imp-where" ' +
+        'placeholder="best_email IS NOT NULL"></div>' +
+        '<div class="field"><label>Max rows</label>' +
+        '<input type="number" id="imp-limit" value="5000" min="1" max="500000"></div></div>' +
+        '<label class="check"><input type="checkbox" id="imp-only-email"> ' +
+        'Only rows that have an email</label>' +
+        '<div class="toolbar" style="margin-top:12px">' +
+        '<button class="btn primary" id="imp-run">Import from this file</button></div>' +
+        '</div>' +
         '<div id="imp-result" class="mt"></div>' +
-        '<div class="sep"></div><div class="small dim">Recognised columns: email, first name, last name, ' +
-        'company, title, domain, phone, city, country, industry, linkedin, notes, tags. ' +
-        'Duplicates are skipped, invalid addresses counted separately.</div>' +
-        '<label class="check mt"><input type="checkbox" id="imp-update"> Fill empty fields on existing leads</label>',
+        '<div class="sep"></div><div class="small dim">Recognised columns: email, first name, ' +
+        'last name, company, title, domain, website, description (the company description), ' +
+        'phone, city, country, industry, linkedin, notes, tags, source. Duplicates are skipped, ' +
+        'and every row needs an email, a company, a domain or a name to identify it.</div>' +
+        '<label class="check mt"><input type="checkbox" id="imp-update"> ' +
+        'Fill empty fields on existing leads</label>',
       footer: '<button class="btn" data-close>Done</button>',
       onMount: function (root) {
+        var modeButtons = $$('[data-imp-mode]', root);
+        modeButtons.forEach(function (button) {
+          button.onclick = function () {
+            modeButtons.forEach(function (x) { x.classList.toggle('on', x === button); });
+            $('#imp-upload', root).classList.toggle('hidden', button.dataset.impMode !== 'upload');
+            $('#imp-path', root).classList.toggle('hidden', button.dataset.impMode !== 'path');
+          };
+        });
+
+        // ---- upload
         var drop = $('#drop', root);
         var input = document.createElement('input');
         input.type = 'file';
@@ -2041,27 +2104,84 @@
             }
             b64 = btoa(b64);
             fill.style.width = '70%';
-            call('/api/lead/import', { name: file.name, b64: b64, update_existing: $('#imp-update', root).checked })
-              .then(function (r) {
-                fill.style.width = '100%';
-                var box = $('#imp-result', root);
-                if (!r.ok) {
-                  box.innerHTML = '<div class="callout" style="border-left-color:var(--red)"><strong>Import failed.</strong> ' +
-                    h(r.error) + '</div>';
-                  return;
-                }
-                box.innerHTML = '<div class="callout green"><strong>' + r.imported + ' new leads imported.</strong> ' +
-                  (r.existing_email ? r.existing_email + ' already existed. ' : '') +
-                  (r.duplicates ? r.duplicates + ' duplicate rows in the file. ' : '') +
-                  (r.invalid ? r.invalid + ' invalid addresses. ' : '') +
-                  (r.updated ? r.updated + ' existing leads updated. ' : '') +
-                  '<div class="small dim" style="margin-top:6px">Mapped: ' +
-                  h(Object.keys(r.mapped || {}).join(', ')) + '</div></div>';
-                toast(r.imported + ' leads imported');
-                refresh(); loadLeads();
-              });
+            call('/api/lead/import', {
+              name: file.name, b64: b64,
+              update_existing: $('#imp-update', root).checked,
+              only_email: $('#imp-only-email', root).checked
+            }).then(function (r) {
+              fill.style.width = '100%';
+              $('#imp-result', root).innerHTML = impCallout(r);
+              if (r.ok) { toast(r.imported + ' contacts imported'); refresh(); loadLeads(); }
+            });
           };
           reader.readAsArrayBuffer(file);
+        }
+
+        // ---- a file on this computer (the LEAD_INDEX files are gigabytes)
+        $('#imp-check', root).onclick = function () { check(); };
+        $('#imp-run', root).onclick = function () { run(); };
+
+        function check() {
+          var path = $('#imp-path-input', root).value.trim();
+          if (!path) return toast('Paste the path to a file first', 'err');
+          var box = $('#imp-tables', root);
+          box.innerHTML = '<div class="small dim">Reading the file...</div>';
+          call('/api/lead/inspect', { path: path }).then(function (r) {
+            if (!r.ok) {
+              box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+                h(r.error) + '</div>';
+              return;
+            }
+            showInfo(r);
+          });
+        }
+
+        function showInfo(info) {
+          var box = $('#imp-tables', root);
+          var head = '<div class="small dim">' + h(info.name) + ' &middot; ' + h(info.kind) +
+            ' &middot; ' + info.size_mb + ' MB' +
+            (info.rows ? ' &middot; ' + num(info.rows) + ' rows' : '') + '</div>';
+          var tables = (info.tables && info.tables.length > 1)
+            ? '<div class="field mt"><label>Table</label><select id="imp-table">' +
+              info.tables.map(function (t) {
+                return '<option value="' + h(t.name) + '"' +
+                  (t.name === info.table ? ' selected' : '') + '>' + h(t.name) +
+                  (t.rows ? '  (' + num(t.rows) + ')' : '') + '</option>';
+              }).join('') + '</select></div>'
+            : '';
+          var columns = (info.columns && info.columns.length)
+            ? '<div class="small dim mt">Columns: ' +
+              h(info.columns.slice(0, 20).join(', ')) +
+              (info.columns.length > 20 ? ', ...' : '') + '</div>'
+            : '';
+          box.innerHTML = head + tables + columns;
+          var select = $('#imp-table', root);
+          if (select) {
+            select.onchange = function () {
+              call('/api/lead/inspect', { path: info.path, table: select.value })
+                .then(function (next) { if (next.ok) showInfo(next); });
+            };
+          }
+        }
+
+        function run() {
+          var path = $('#imp-path-input', root).value.trim();
+          if (!path) return toast('Paste the path to a file first', 'err');
+          var box = $('#imp-result', root);
+          box.innerHTML = '<div class="small dim">Importing - a big file can take a minute...</div>';
+          var body = {
+            path: path,
+            limit: Number($('#imp-limit', root).value) || 5000,
+            where: $('#imp-where', root).value,
+            update_existing: $('#imp-update', root).checked,
+            only_email: $('#imp-only-email', root).checked
+          };
+          var select = $('#imp-table', root);
+          if (select) body.table = select.value;
+          call('/api/lead/import/path', body).then(function (r) {
+            box.innerHTML = impCallout(r);
+            if (r.ok) { toast(r.imported + ' contacts imported'); refresh(); loadLeads(); }
+          });
         }
       }
     });

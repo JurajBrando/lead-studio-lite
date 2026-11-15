@@ -1,3 +1,40 @@
+## [1.10.0] - 2026-11-15
+
+Contacts without an email address, and importing the multi-gigabyte files people actually have.
+
+### Changed
+
+- **An email is no longer required.** The leads table used to make the address `NOT NULL UNIQUE`,
+  so exactly one contact could exist without one. It is now optional, guarded by a partial unique
+  index (`UNIQUE WHERE email <> ''`), and a row is identified by an address, a company, a domain,
+  a LinkedIn URL or a name. A file of companies with a description imports cleanly; those rows
+  simply cannot be enrolled in a sequence (the queue skips them, and so does "verify").
+- **A `description` field on the lead** (the company description), mapped from `description`,
+  `about`, `summary`, `text300`, `bio` and friends, shown in the table where the email would be,
+  editable in the lead form, included in search and in every export.
+- **Re-importing fills the gap**: `update_existing` now matches an email-less row by company (and
+  name) as well as by address, so a company file and a people file of the same accounts merge
+  instead of duplicating.
+- **Importing a file on this computer**, not just an upload: *Leads -> Import -> File on this
+  computer*. It streams Parquet (pyarrow batches) and DuckDB/SQLite (cursor + `LIMIT`), so a
+  10 GB file with 62 million rows is fine; you pick the table, an optional SQL `WHERE` (DuckDB and
+  SQLite only), a row cap, and whether to keep only rows with an address. `POST /api/lead/inspect`
+  reports tables, columns and row counts without reading the data.
+- **Faster inserts**: one transaction per 500 rows instead of one commit per lead.
+
+### Fixed
+
+- A company name is no longer duplicated into the contact column when a row has no address.
+- Domains are normalised on import: `https://www.Example.com/about` becomes `example.com`, and a
+  column holding `"a@x.com, b@y.com"` takes the first valid address.
+
+### Tests
+
+271 (was 257): the table rebuild (children preserved, two empty addresses allowed, duplicate
+address still refused, backup written), email-less imports, the `only_email` switch, company
+de-duplication and promotion, Parquet and DuckDB path imports with a filter, the filter refusing a
+second statement, and the "a row needs something to identify it" rule.
+
 ## [1.9.0] - 2026-11-15
 
 The Social tab rebuilt: a five-field video composer, then the Metricool workspace it feeds.

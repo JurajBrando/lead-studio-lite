@@ -1,4 +1,4 @@
-﻿"""End-to-end tests for Lead Studio Lite.
+"""End-to-end tests for Lead Studio Lite.
 
 Run:  python -m unittest discover -s tests -v
 
@@ -142,10 +142,41 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(row["first_name"], "Test")
         self.assertEqual(row["last_name"], "Person")
 
-    def test_import_requires_email_column(self):
-        res = importer.import_data("x.csv", b"name,phone\nA,123\n")
+    def test_import_without_an_email_column_is_allowed(self):
+        text = (b"Company,Description,Domain\n"
+                b"Acme GmbH,We build thingies,https://www.acme-test.com/about\n")
+        res = importer.import_data("companies.csv", text)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["imported"], 1)
+        self.assertEqual(res["no_email"], 1)
+        row = db.one("SELECT * FROM leads WHERE company='Acme GmbH'")
+        self.assertEqual(row["email"], "")
+        self.assertEqual(row["verify_status"], "none")
+        self.assertEqual(row["description"], "We build thingies")
+        self.assertEqual(row["domain"], "acme-test.com")
+
+    def test_a_row_still_needs_something_to_identify_it(self):
+        res = importer.import_data("x.csv", b"phone,notes\n123,hello\n")
         self.assertFalse(res["ok"])
-        self.assertIn("email", res["error"].lower())
+        self.assertIn("company", res["error"].lower())
+
+    def test_company_rows_are_not_duplicated(self):
+        text = b"company,description\nAcme,We build\nAcme,We build\n"
+        res = importer.import_data("x.csv", text)
+        self.assertEqual(res["imported"], 1)
+        self.assertEqual(res["duplicates"], 1)
+        again = importer.import_data("x.csv", text)
+        self.assertEqual(again["imported"], 0)
+        self.assertEqual(again["existing_email"], 1)
+
+    def test_update_existing_fills_the_missing_email(self):
+        importer.import_data("companies.csv", b"company,description\nAcme,We build\n")
+        res = importer.import_data("people.csv", b"company,email\nAcme,hi@acme-test.com\n",
+                                   update_existing=True)
+        self.assertEqual(res["updated"], 1)
+        row = db.one("SELECT * FROM leads WHERE company='Acme'")
+        self.assertEqual(row["email"], "hi@acme-test.com")
+        self.assertEqual(row["verify_status"], "unverified")
 
     def test_export_round_trip(self):
         importer.import_data("leads.csv", b"email\nx@export-test.com\n")

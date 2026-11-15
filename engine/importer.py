@@ -1,4 +1,10 @@
-"""CSV / TSV / Excel import with column auto-mapping and de-duplication."""
+"""CSV / TSV / Excel / Parquet / DuckDB / SQLite import with column auto-mapping.
+
+An email address is welcome but no longer required: a row that identifies a company (with
+a description and maybe a domain) is a contact too. What every row does need is something
+that names it - an address, a company, a domain, a LinkedIn URL or a person's name - so a
+file of descriptions alone cannot turn into thousands of identical blank leads.
+"""
 import csv
 import io
 import os
@@ -9,14 +15,21 @@ from . import db, mail
 # Any of these column names maps onto the app's field of the same target.
 ALIASES = {
     "email": ["email", "e-mail", "e_mail", "mail", "email address", "email_address", "contact_email",
-              "best_email", "work_email", "business_email", "emailaddress", "adresa", "epost"],
+              "best_email", "primary_email", "work_email", "business_email", "emailaddress",
+              "emails", "email_addresses", "adresa", "epost"],
     "first_name": ["first_name", "firstname", "first", "given_name", "fname", "meno", "jmeno"],
     "last_name": ["last_name", "lastname", "last", "surname", "family_name", "lname", "priezvisko"],
-    "name": ["name", "full_name", "fullname", "contact_name", "contact", "display_name", "meno_a_priezvisko"],
-    "company": ["company", "company_name", "organization", "organisation", "business", "account",
-                "employer", "firma", "spolocnost", "brand"],
+    "name": ["name", "full_name", "fullname", "contact_name", "contact", "display_name",
+             "person_name", "meno_a_priezvisko"],
+    "company": ["company", "company_name", "organization", "organisation", "organization_name",
+                "business", "business_name", "account", "employer", "biz_name", "brand",
+                "firma", "spolocnost"],
     "title": ["title", "job_title", "position", "role", "headline", "function", "pozicia"],
-    "domain": ["domain", "website", "company_website", "url", "site", "web", "homepage"],
+    "domain": ["domain", "website", "company_website", "url", "site", "web", "homepage",
+               "website_url", "root_domain", "home_url"],
+    "description": ["description", "company_description", "business_description", "about",
+                    "company_about", "summary", "short_description", "site_description",
+                    "text300", "bio", "popis"],
     "phone": ["phone", "phone_number", "mobile", "telephone", "tel", "cell", "telefon"],
     "city": ["city", "town", "locality", "mesto"],
     "country": ["country", "krajina", "nation"],
@@ -24,24 +37,62 @@ ALIASES = {
     "linkedin": ["linkedin", "linkedin_url", "linkedin_profile", "li_url"],
     "notes": ["notes", "note", "comment", "comments", "remark", "poznamka"],
     "tags": ["tags", "tag", "labels", "list"],
-    "source": ["source", "lead_source", "origin", "zdroj"],
+    "source": ["source", "lead_source", "origin", "zdroj", "source_file"],
 }
 
-FIELD_ORDER = ["email", "first_name", "last_name", "company", "title", "domain", "phone", "city",
-               "country", "industry", "linkedin", "notes", "tags", "source"]
+FIELD_ORDER = ["email", "first_name", "last_name", "company", "title", "domain", "description",
+               "phone", "city", "country", "industry", "linkedin", "notes", "tags", "source"]
+
+# A row with none of these cannot be told apart from the next one.
+IDENTITY_FIELDS = ("email", "company", "domain", "linkedin", "name", "first_name", "last_name")
 
 MAILTO_RX = re.compile(r"^mailto:", re.I)
 ANGLE_RX = re.compile(r"<([^<>]+)>")
+EMAIL_RX = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+DOMAIN_RX = re.compile(r"^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}$")
+BATCH = 500
+
+
+def _cell(value):
+    """Any parquet/duckdb value as a clean string."""
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace").strip()
+    if isinstance(value, float) and value != value:      # NaN
+        return ""
+    return str(value).strip()
 
 
 def clean_email(value):
-    v = (value or "").strip().strip('"').strip("'")
+    v = _cell(value).strip('"').strip("'")
+    if not v:
+        return ""
     v = MAILTO_RX.sub("", v)
     m = ANGLE_RX.search(v)
     if m:
         v = m.group(1)
-    v = v.replace(" ", "").strip(",;:")
+    v = v.replace(" ", "").strip(",;:'\"()[]<>")
+    if EMAIL_RX.fullmatch(v):
+        return v.lower()
+    found = EMAIL_RX.search(v)
+    if found:                                            # "a@b.com, c@d.com" or a JSON list
+        return found.group(0).lower()
     return v.lower()
+
+
+def clean_domain(value):
+    """https://www.Example.com/path -> example.com. A bare word is not a domain."""
+    v = _cell(value).lower()
+    if not v:
+        return ""
+    v = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", v)
+    v = v.split("/")[0].split("?")[0].split("#")[0]
+    if "@" in v:
+        v = v.split("@")[-1]
+    v = v.split(":")[0]
+    v = re.sub(r"^www\.", "", v).strip(". ")
+    return v if DOMAIN_RX.match(v) else ""
 
 
 def split_name(full):
@@ -97,8 +148,24 @@ def decode_bytes(raw):
     return raw.decode("utf-8", "replace")
 
 
+# ------------------------------------------------------------------ sources
+def path_kind(path):
+    lower = str(path or "").lower()
+    if lower.endswith(".parquet"):
+        return "parquet"
+    if lower.endswith((".duckdb", ".ddb", ".duck")):
+        return "duckdb"
+    if lower.endswith((".db", ".sqlite", ".sqlite3")):
+        return "sqlite"
+    if lower.endswith((".xlsx", ".xlsm")):
+        return "excel"
+    if lower.endswith((".csv", ".tsv", ".txt", ".psv")):
+        return "csv"
+    return ""
+
+
 def read_rows(name, raw):
-    """Yield (headers, list_of_dicts) from CSV-ish text, Excel, Parquet, DuckDB or SQLite."""
+    """(headers, rows) from CSV-ish text, Excel, Parquet, DuckDB or SQLite bytes."""
     lname = (name or "").lower()
     if lname.endswith(".parquet"):
         return _read_parquet(raw)
@@ -122,7 +189,7 @@ def read_rows(name, raw):
         for values in it:
             if not any(v is not None and str(v).strip() for v in values):
                 continue
-            rows.append({headers[i]: ("" if v is None else str(v).strip())
+            rows.append({headers[i]: _cell(v)
                          for i, v in enumerate(values) if i < len(headers) and headers[i]})
         wb.close()
         return headers, rows
@@ -169,7 +236,7 @@ def _rows_from_records(records):
                 headers.append(key)
     rows = []
     for record in records:
-        rows.append({h: ("" if record.get(h) is None else str(record.get(h))) for h in headers})
+        rows.append({h: _cell(record.get(h)) for h in headers})
     return headers, rows
 
 
@@ -250,57 +317,345 @@ def _read_sqlite(raw):
             pass
 
 
-def import_data(name, raw, source="import", update_existing=False, mark_status="new"):
-    """Import rows. Returns a summary dict."""
-    headers, raw_rows = read_rows(name, raw)
-    if not raw_rows:
-        return {"ok": False, "error": "No data rows found in that file.", "headers": headers}
-    mapping = map_headers(headers)
-    if "email" not in mapping:
-        return {"ok": False, "headers": headers,
-                "error": "Couldn't find an email column. Rename one column to 'email' and try again."}
+# ------------------------------------------------------------------ files on this computer
+# The files people actually have can be many gigabytes (LEAD_INDEX: a 10 GB DuckDB with 62
+# million rows), so a path import streams instead of reading the file into memory, and it
+# stops at a row cap the user sets.
+def _check_path(path):
+    full = os.path.abspath(os.path.expanduser(str(path or "").strip().strip('"')))
+    if not os.path.isfile(full):
+        raise ValueError("That file does not exist: %s" % (full or "(empty)"))
+    kind = path_kind(full)
+    if not kind:
+        raise ValueError("That file type cannot be imported. Use CSV, TSV, Excel, Parquet, "
+                         "DuckDB or SQLite.")
+    return full, kind
 
-    seen = set()
+
+def _table_names(con, kind):
+    if kind == "duckdb":
+        rows = con.execute("SHOW TABLES").fetchall()
+        names = [r[0] for r in rows]
+        counts = {}
+        try:
+            for name, size in con.execute(
+                    "SELECT table_name, estimated_size FROM duckdb_tables()").fetchall():
+                counts[name] = int(size or 0)
+        except Exception:                       # noqa: BLE001 - older duckdb
+            counts = {}
+        return [{"name": n, "rows": counts.get(n)} for n in names]
+    if kind == "sqlite":
+        names = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+        return [{"name": n, "rows": con.execute(
+            'SELECT count(*) FROM "%s"' % n.replace('"', '""')).fetchone()[0]}
+            for n in names if n not in SQLITE_SKIP]
+    return []
+
+
+def _columns_of(con, kind, table):
+    if kind == "duckdb":
+        return [r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name=? "
+            "ORDER BY ordinal_position", [table]).fetchall()]
+    if kind == "sqlite":
+        return [r[1] for r in con.execute(
+            'PRAGMA table_info("%s")' % table.replace('"', '""')).fetchall()]
+    return []
+
+
+def inspect_source(path, table=""):
+    """What a file on disk offers: tables, columns, row counts. No reading of the data."""
+    try:
+        full, kind = _check_path(path)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    size_mb = round(os.path.getsize(full) / 1048576.0, 1)
+    info = {"ok": True, "path": full, "name": os.path.basename(full), "kind": kind,
+            "size_mb": size_mb, "tables": [], "table": "", "columns": [], "rows": None}
+    try:
+        if kind == "parquet":
+            import pyarrow.parquet as pq  # type: ignore
+            meta = pq.ParquetFile(full).metadata
+            info["rows"] = meta.num_rows
+            info["columns"] = [f.name for f in pq.ParquetFile(full).schema_arrow]
+            info["tables"] = [{"name": "(the file)", "rows": meta.num_rows}]
+        elif kind in ("duckdb", "sqlite"):
+            if kind == "duckdb":
+                try:
+                    import duckdb  # type: ignore
+                except ImportError:
+                    raise ValueError(DUCKDB_HINT)
+                con = duckdb.connect(full, read_only=True)
+            else:
+                import sqlite3
+                con = sqlite3.connect(full)
+            try:
+                info["tables"] = _table_names(con, kind)
+                names = [t["name"] for t in info["tables"]]
+                chosen = table if table in names else (names[0] if names else "")
+                info["table"] = chosen
+                if chosen:
+                    info["rows"] = next((t.get("rows") for t in info["tables"]
+                                         if t["name"] == chosen), None)
+                    info["columns"] = _columns_of(con, kind, chosen)
+            finally:
+                con.close()
+        elif kind == "excel":
+            try:
+                import openpyxl  # type: ignore
+            except ImportError:
+                raise ValueError("This build cannot read Excel files. Save the sheet as CSV.")
+            wb = openpyxl.load_workbook(full, read_only=True, data_only=True)
+            ws = wb.active
+            info["columns"] = [str(c.value or "") for c in next(ws.iter_rows(max_row=1))[0:]]
+            info["rows"] = ws.max_row
+            info["tables"] = [{"name": ws.title, "rows": ws.max_row}]
+            info["table"] = ws.title
+            wb.close()
+        else:                                    # csv
+            with open(full, "rb") as fh:
+                head = fh.read(65536)
+            text = decode_bytes(head)
+            first = text.splitlines()[0] if text else ""
+            info["columns"] = [c.strip() for c in re.split(r"[,;\t|]", first) if c.strip()]
+            info["rows"] = None
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:                     # noqa: BLE001 - a broken file is not a crash
+        return {"ok": False, "error": "Could not open that file: %s" % exc}
+    return info
+
+
+def _safe_where(where):
+    text = str(where or "").strip().rstrip(";").strip()
+    if not text:
+        return ""
+    if any(token in text for token in (";", "--", "/*", "*/")):
+        raise ValueError("Put one condition in the filter - no semicolons or comments.")
+    return text
+
+
+def iter_source_rows(path, table="", where="", limit=0):
+    """(headers, generator of row dicts). Streams parquet and DuckDB, never loads it all."""
+    full, kind = _check_path(path)
+    where = _safe_where(where)
+    if kind == "parquet":
+        if where:
+            raise ValueError("A filter needs a DuckDB or SQLite file; a Parquet file has no "
+                             "query engine here. Use 'Only rows with an email', or import the "
+                             "DuckDB file instead.")
+        import pyarrow.parquet as pq  # type: ignore
+        handle = pq.ParquetFile(full)
+        headers = [f.name for f in handle.schema_arrow]
+
+        def parquet_rows():
+            seen = 0
+            for batch in handle.iter_batches(batch_size=2000):
+                for record in batch.to_pylist():
+                    yield {k: _cell(v) for k, v in record.items()}
+                    seen += 1
+                    if limit and seen >= limit:
+                        return
+        return headers, parquet_rows()
+
+    if kind in ("duckdb", "sqlite"):
+        if kind == "duckdb":
+            try:
+                import duckdb  # type: ignore
+            except ImportError:
+                raise ValueError(DUCKDB_HINT)
+            con = duckdb.connect(full, read_only=True)
+        else:
+            import sqlite3
+            con = sqlite3.connect(full)
+        tables = [t["name"] for t in _table_names(con, kind)]
+        chosen = table if table in tables else (tables[0] if tables else "")
+        if not chosen:
+            con.close()
+            raise ValueError("That file has no tables.")
+        sql = 'SELECT * FROM "%s"' % chosen.replace('"', '""')
+        if where:
+            sql += " WHERE " + where
+        if limit:
+            sql += " LIMIT %d" % int(limit)
+        cursor = con.execute(sql)
+        headers = [d[0] for d in cursor.description]
+
+        def db_rows():
+            try:
+                while True:
+                    batch = cursor.fetchmany(2000)
+                    if not batch:
+                        return
+                    for record in batch:
+                        if isinstance(record, (tuple, list)):
+                            yield {h: _cell(v) for h, v in zip(headers, record)}
+                        else:
+                            yield {h: _cell(record[h]) for h in headers}
+            finally:
+                con.close()
+        return headers, db_rows()
+
+    # csv / excel: read the file whole, so cap the size
+    size = os.path.getsize(full)
+    if size > 200 * 1048576:
+        raise ValueError("That file is over 200 MB. Import a slice: use a DuckDB file with a "
+                         "filter, or split the CSV.")
+    with open(full, "rb") as fh:
+        raw = fh.read()
+    headers, rows = read_rows(os.path.basename(full), raw)
+    if limit:
+        rows = rows[:int(limit)]
+    return headers, rows
+
+
+def import_path(path, table="", where="", limit=20000, source="", update_existing=False,
+                mark_status="new", only_email=False):
+    """Import rows from a file on this computer, streaming and capped."""
+    try:
+        full, kind = _check_path(path)
+        headers, rows = iter_source_rows(full, table=table, where=where, limit=limit)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    summary = import_rows(os.path.basename(full), headers, rows, source=source or "import",
+                          update_existing=update_existing, mark_status=mark_status,
+                          limit=limit, only_email=only_email)
+    summary["path"] = full
+    summary["kind"] = kind
+    if table:
+        summary["table"] = table
+    return summary
+
+
+# ------------------------------------------------------------------ the import itself
+def _full_name(data):
+    return " ".join(x for x in (data.get("first_name"), data.get("last_name")) if x).strip()
+
+
+def identity_key(email, data):
+    """A stable handle within one file. Email first, then what names the company or person."""
+    if email:
+        return "email:" + email
+    company = (data.get("company") or "").strip().lower()
+    domain = (data.get("domain") or "").strip().lower()
+    if company and domain:
+        return "company:%s|%s" % (company, domain)
+    name = _full_name(data).lower()
+    if name and company:
+        return "person:%s|%s" % (name, company)
+    if company:
+        return "company:" + company
+    if domain:
+        return "domain:" + domain
+    linkedin = (data.get("linkedin") or "").strip().lower()
+    if linkedin:
+        return "linkedin:" + linkedin
+    if name:
+        return "person:" + name
+    return ""
+
+
+def _find_existing(email, data):
+    """The row this import would duplicate, if any. An address wins over a company match."""
+    if email:
+        row = db.one("SELECT * FROM leads WHERE email=?", (email,))
+        if row:
+            return row
+    company = (data.get("company") or "").strip()
+    domain = (data.get("domain") or "").strip()
+    if company and domain:
+        row = db.one("SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+                     "AND lower(coalesce(domain,''))=lower(?) LIMIT 1", (company, domain))
+        if row:
+            return row
+    name = _full_name(data)
+    if name and company:
+        return db.one(
+            "SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+            "AND lower(trim(coalesce(first_name,'')||' '||coalesce(last_name,'')))=lower(?) LIMIT 1",
+            (company, name))
+    if company:
+        return db.one("SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+                      "AND lower(coalesce(domain,''))='' LIMIT 1", (company,))
+    return None
+
+
+def import_rows(name, headers, rows, source="import", update_existing=False,
+                mark_status="new", limit=0, only_email=False, mapping=None):
+    """The import loop. `rows` is any iterable of dicts keyed by header name."""
+    headers = list(headers or [])
+    if not headers:
+        return {"ok": False, "error": "That file has no header row.", "headers": []}
+    mapping = mapping or map_headers(headers)
+    if not any(field in mapping for field in IDENTITY_FIELDS):
+        return {"ok": False, "headers": headers,
+                "error": "Couldn't find an email, company, domain or name column. Rename one "
+                         "column to 'email' or 'company' (or 'name') and try again."}
+
     summary = {"ok": True, "file": name, "headers": headers,
                "mapped": {k: headers[v] for k, v in mapping.items()},
                "imported": 0, "updated": 0, "duplicates": 0, "invalid": 0,
-               "existing_email": 0, "skipped_blank": 0}
+               "existing_email": 0, "skipped_blank": 0, "no_email": 0,
+               "examined": 0, "stopped_at_limit": False}
     ts = db.now()
-    for row in raw_rows:
-        email = clean_email(row.get(headers[mapping["email"]], ""))
-        if not email:
-            summary["skipped_blank"] += 1
-            continue
-        if not mail.valid_email(email):
+    base = {column: "" for column in db.LEAD_FIELD_NAMES}
+    suppressed = {r["email"] for r in db.rows("SELECT email FROM suppressions")}
+    seen = set()
+    pending = []
+
+    def flush():
+        if pending:
+            db.insert_many("leads", pending)
+            del pending[:]
+
+    for row in rows:
+        if limit and summary["examined"] >= limit:
+            summary["stopped_at_limit"] = True
+            break
+        summary["examined"] += 1
+
+        email = clean_email(row.get(headers[mapping["email"]])) if "email" in mapping else ""
+        if email and not mail.valid_email(email):
             summary["invalid"] += 1
             continue
-        if email in seen:
-            summary["duplicates"] += 1
+        if only_email and not email:
+            summary["no_email"] += 1
             continue
-        seen.add(email)
 
         data = {}
         for field, idx in mapping.items():
             if field == "email":
                 continue
-            val = (row.get(headers[idx], "") or "").strip()
-            if val:
-                data[field] = val
+            value = _cell(row.get(headers[idx]))
+            if value:
+                data[field] = value
         if "name" in data:
             fname, lname = split_name(data.pop("name"))
             data.setdefault("first_name", fname)
             if lname:
                 data.setdefault("last_name", lname)
-        if not data.get("domain"):
+        if data.get("domain"):
+            data["domain"] = clean_domain(data["domain"]) or data["domain"]
+        if not data.get("domain") and email:
             data["domain"] = email.rsplit("@", 1)[-1]
-        data["email"] = email
-        data.setdefault("source", source)
 
-        existing = db.one("SELECT id FROM leads WHERE email=?", (email,))
+        key = identity_key(email, data)
+        if not key:
+            summary["skipped_blank"] += 1
+            continue
+        if key in seen:
+            summary["duplicates"] += 1
+            continue
+        seen.add(key)
+
+        existing = _find_existing(email, data)
         if existing:
             if update_existing:
-                patch = {k: v for k, v in data.items() if v and not db.one(
-                    "SELECT %s AS v FROM leads WHERE id=?" % k, (existing["id"],))["v"]}
+                patch = {k: v for k, v in data.items() if v and not (existing.get(k) or "")}
+                if email and not existing.get("email"):
+                    patch["email"] = email          # the address this row was missing
+                    patch["verify_status"] = "unverified"
                 if patch:
                     patch["updated_ts"] = ts
                     db.update("leads", existing["id"], patch)
@@ -309,21 +664,45 @@ def import_data(name, raw, source="import", update_existing=False, mark_status="
             summary["existing_email"] += 1
             continue
 
-        data.update({"created_ts": ts, "updated_ts": ts,
-                     "status": mark_status or "new", "verify_status": "unverified"})
-        if db.is_suppressed(email):
-            data["status"] = "unsubscribed"
-        db.insert("leads", data)
+        record = dict(base)
+        record.update(data)
+        record.update({
+            "email": email,
+            "created_ts": ts,
+            "updated_ts": ts,
+            "status": mark_status or "new",
+            "verify_status": "unverified" if email else "none",
+        })
+        if email and email in suppressed:
+            record["status"] = "unsubscribed"
+        pending.append(record)
         summary["imported"] += 1
+        if not email:
+            summary["no_email"] += 1
+        if len(pending) >= BATCH:
+            flush()
+    flush()
 
-    db.event("import", "%s: +%d new, %d existing, %d invalid" % (
-        name, summary["imported"], summary["existing_email"], summary["invalid"]))
+    db.event("import", "%s: +%d new (%d without an email), %d existing, %d invalid" % (
+        name, summary["imported"], summary["no_email"], summary["existing_email"],
+        summary["invalid"]))
     return summary
 
 
-EXPORT_COLS = ["email", "first_name", "last_name", "company", "title", "domain", "phone", "city",
-               "country", "industry", "linkedin", "website", "status", "verify_status", "tags",
-               "source", "notes", "created_ts", "last_contact_ts", "replied_ts"]
+def import_data(name, raw, source="import", update_existing=False, mark_status="new",
+                only_email=False):
+    """Import an uploaded file. Returns a summary dict."""
+    headers, raw_rows = read_rows(name, raw)
+    if not raw_rows:
+        return {"ok": False, "error": "No data rows found in that file.", "headers": headers}
+    return import_rows(name, headers, raw_rows, source=source, update_existing=update_existing,
+                       mark_status=mark_status, only_email=only_email)
+
+
+EXPORT_COLS = ["email", "first_name", "last_name", "company", "title", "domain", "description",
+               "phone", "city", "country", "industry", "linkedin", "website", "status",
+               "verify_status", "tags", "source", "notes", "created_ts", "last_contact_ts",
+               "replied_ts"]
 
 
 def lead_records(status="", search=""):
@@ -333,9 +712,10 @@ def lead_records(status="", search=""):
         where.append("status=?")
         args.append(status)
     if search:
-        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ?)")
+        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ? "
+                     "OR description LIKE ?)")
         like = "%%%s%%" % search
-        args.extend([like] * 4)
+        args.extend([like] * 5)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id"
@@ -422,16 +802,15 @@ def export_csv(status="", search=""):
         where.append("status=?")
         args.append(status)
     if search:
-        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ?)")
+        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ? "
+                     "OR description LIKE ?)")
         like = "%%%s%%" % search
-        args.extend([like] * 4)
+        args.extend([like] * 5)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id"
     data = db.rows(sql, args)
-    cols = ["email", "first_name", "last_name", "company", "title", "domain", "phone", "city",
-            "country", "industry", "linkedin", "website", "status", "verify_status", "tags",
-            "source", "notes", "created_ts", "last_contact_ts", "replied_ts"]
+    cols = EXPORT_COLS
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     w.writeheader()

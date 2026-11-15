@@ -25,9 +25,12 @@ built-in data enrichment.
 
 ## Features
 
-- **Import anything** — CSV, TSV, semicolon files, Excel `.xlsx`. Column names are auto-mapped
-  (`Email`, `E-mail`, `Company`, `Job Title`, `First Name` …), duplicates skipped, invalid addresses
-  reported.
+- **Import anything** — CSV, TSV, semicolon files, Excel `.xlsx`, Parquet, DuckDB and SQLite.
+  Column names are auto-mapped (`Email`, `E-mail`, `Company`, `Job Title`, `Description` …),
+  duplicates skipped, invalid addresses reported. **An email is optional**: a company with a
+  description, a domain or a name is a contact too, and the rows that have no address simply
+  cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
+  on disk, streamed and capped, with an optional SQL filter for DuckDB.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks
@@ -100,8 +103,9 @@ to itself.
 
 1. **Connect a mailbox** — *Mailboxes → Add mailbox*. SMTP for sending, IMAP for replies. Use an
    **app password**, not your account password. Press *Test connection*, then *Send test email*.
-2. **Import leads** — *Leads → Import*, drop a CSV with an `email` column. `samples/leads-sample.csv`
-   shows the columns it recognises.
+2. **Import leads** — *Leads → Import*. Drop a CSV (or Parquet/DuckDB/Excel), or point the
+   *File on this computer* tab at a big file and cap the rows. An email column helps but is not
+   required; `samples/leads-sample.csv` shows the columns it recognises.
 3. **Verify** — one button; red addresses never reach your sequence.
 4. **Build a sequence** — day 0 intro, day 3 follow-up, day 7 close. Two or three short emails beat
    one long one.

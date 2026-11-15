@@ -120,8 +120,9 @@ def r_leads(q=""):
             "pages": max(1, (total + per - 1) // per)}
 
 
-LEAD_FIELDS = ("email", "first_name", "last_name", "company", "title", "domain", "phone", "city",
-               "country", "industry", "linkedin", "website", "notes", "tags", "source", "status")
+LEAD_FIELDS = ("email", "first_name", "last_name", "company", "title", "domain", "description",
+               "phone", "city", "country", "industry", "linkedin", "website", "notes", "tags",
+               "source", "status")
 
 
 def r_lead_save(p):
@@ -139,31 +140,42 @@ def r_lead_save(p):
         if key in p:
             value = p.get(key)
             fields[key] = ("" if value is None else str(value)).strip()
-    email = fields.get("email", (current or {}).get("email", ""))
-    if not mail.valid_email(email):
-        return {"ok": False, "error": "That email address doesn't look valid."}
-    fields["email"] = email.lower()
-    email_changed = bool(current) and fields["email"] != (current.get("email") or "").lower()
+    if "email" in fields:
+        fields["email"] = fields["email"].lower()
+        if fields["email"] and not mail.valid_email(fields["email"]):
+            return {"ok": False, "error": "That email address doesn't look valid."}
+    merged = dict(current or {})
+    merged.update(fields)
+    # A lead without an address is allowed, but it still has to be *someone*.
+    if not any((merged.get(key) or "").strip() for key in
+               ("email", "company", "domain", "linkedin", "first_name", "last_name")):
+        return {"ok": False,
+                "error": "Give the lead an email, a company, a domain, a LinkedIn URL or a name."}
+    email = (merged.get("email") or "").strip().lower()
+    fields["email"] = email
+    email_changed = bool(current) and email != (current.get("email") or "").lower()
     # Follow the address when it changes (or when the caller cleared the domain), but never
     # overwrite a domain the user typed by hand.
-    if not fields.get("domain") and (current is None or email_changed or "domain" in fields):
-        fields["domain"] = fields["email"].rsplit("@", 1)[-1]
+    if email and not merged.get("domain") and (current is None or email_changed or "domain" in fields):
+        fields["domain"] = email.rsplit("@", 1)[-1]
     if "status" in fields:
         fields["status"] = fields["status"] or "new"
     ts = db.now()
-    dup = db.one("SELECT id FROM leads WHERE email=? AND id<>?", (fields["email"], lead_id or 0))
-    if dup:
-        return {"ok": False, "error": "Another lead already uses that email address."}
+    if email:
+        dup = db.one("SELECT id FROM leads WHERE email=? AND id<>?", (email, lead_id or 0))
+        if dup:
+            return {"ok": False, "error": "Another lead already uses that email address."}
     if lead_id:
         if email_changed:
-            fields["verify_status"] = "unverified"
+            fields["verify_status"] = "unverified" if email else "none"
         fields["updated_ts"] = ts
         db.update("leads", lead_id, fields)
         return {"ok": True, "id": lead_id}
     for key in LEAD_FIELDS:
         fields.setdefault(key, "")
     fields["status"] = fields.get("status") or "new"
-    fields.update({"created_ts": ts, "updated_ts": ts, "verify_status": "unverified"})
+    fields.update({"created_ts": ts, "updated_ts": ts,
+                   "verify_status": "unverified" if email else "none"})
     new_id = db.insert("leads", fields)
     return {"ok": True, "id": new_id}
 
@@ -236,7 +248,8 @@ def r_lead_import(p):
     try:
         return importer.import_data(name, raw, source="import",
                                     update_existing=bool(p.get("update_existing")),
-                                    mark_status=p.get("status") or "new")
+                                    mark_status=p.get("status") or "new",
+                                    only_email=bool(p.get("only_email")))
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -244,14 +257,40 @@ def r_lead_import(p):
         return {"ok": False, "error": "Could not read that file: %s" % e}
 
 
+def r_lead_inspect(p):
+    """What a file on this computer contains: tables, columns, rows."""
+    return importer.inspect_source(p.get("path") or "", str(p.get("table") or ""))
+
+
+def r_lead_import_path(p):
+    """Import from a file on this computer, streaming and capped (LEAD_INDEX files are GBs)."""
+    try:
+        limit = int(p.get("limit") or 20000)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "The row limit must be a number."}
+    limit = max(1, min(limit, 500000))
+    try:
+        return importer.import_path(
+            p.get("path") or "", table=str(p.get("table") or ""), where=str(p.get("where") or ""),
+            limit=limit, update_existing=bool(p.get("update_existing")),
+            mark_status=p.get("status") or "new", only_email=bool(p.get("only_email")))
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        config.log("path import failed: %s\n%s" % (e, traceback.format_exc()))
+        return {"ok": False, "error": "Could not import that file: %s" % e}
+
+
 def r_lead_verify(p):
     ids = p.get("ids") or []
     limit = min(500, int(p.get("limit", 200) or 200))
     opts = config.load_settings().get("verify", {})
     if ids:
-        leads = db.rows("SELECT * FROM leads WHERE id IN (%s)" % ",".join("?" * len(ids)), tuple(ids))
+        leads = [r for r in db.rows("SELECT * FROM leads WHERE id IN (%s)" % ",".join("?" * len(ids)),
+                                    tuple(ids)) if r["email"]]
     else:
-        leads = db.rows("SELECT * FROM leads WHERE verify_status='unverified' ORDER BY id LIMIT ?", (limit,))
+        leads = db.rows("SELECT * FROM leads WHERE verify_status='unverified' AND email<>'' "
+                        "ORDER BY id LIMIT ?", (limit,))
     checked = {"valid": 0, "risky": 0, "invalid": 0}
     for lead in leads[:limit]:
         res = verify.verify(lead["email"], opts)
@@ -302,7 +341,8 @@ def r_enroll(p):
         return {"ok": False, "error": "Choose a sequence first."}
     ids = p.get("leads") or []
     if p.get("filter") == "new":
-        ids = [r["id"] for r in db.rows("SELECT id FROM leads WHERE status='new' LIMIT 500")]
+        ids = [r["id"] for r in db.rows(
+            "SELECT id FROM leads WHERE status='new' AND email<>'' LIMIT 500")]
     if not ids:
         return {"ok": False, "error": "No leads selected."}
     return pipeline.enroll(int(seq_id), [int(i) for i in ids], int(p.get("mailbox_id") or 0))
@@ -1059,6 +1099,8 @@ ROUTES_POST = {
     "/api/lead/delete": r_lead_delete,
     "/api/lead/status": r_lead_status,
     "/api/lead/import": r_lead_import,
+    "/api/lead/import/path": r_lead_import_path,
+    "/api/lead/inspect": r_lead_inspect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,
     "/api/sequence/delete": r_seq_delete,
