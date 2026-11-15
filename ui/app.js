@@ -2043,7 +2043,12 @@
         '</div>' +
         '<div id="imp-path" class="hidden">' +
         '<div class="field"><label>Path on this computer</label>' +
-        '<input type="text" id="imp-path-input" placeholder="C:\\Users\\...\\leads.parquet"></div>' +
+        '<div class="row"><div class="grow"><input type="text" id="imp-path-input" ' +
+        'placeholder="C:\\Users\\...\\leads.parquet"></div>' +
+        '<button class="btn" id="imp-browse" style="flex:0 0 auto" ' +
+        'title="Find the file in a window">Browse...</button></div>' +
+        '<div class="hint">The window opens on this computer. A big file is read where it is, ' +
+        'nothing is copied.</div></div>' +
         '<div class="toolbar"><button class="btn" id="imp-check">Check the file</button>' +
         '<span class="small dim" id="imp-info"></span></div>' +
         '<div id="imp-tables"></div>' +
@@ -2118,6 +2123,24 @@
         }
 
         // ---- a file on this computer (the LEAD_INDEX files are gigabytes)
+        $('#imp-browse', root).onclick = function () {
+          var button = this;
+          var label = button.textContent;
+          button.disabled = true;
+          button.textContent = 'Opening...';
+          call('/api/dialog/pick', {
+            title: 'Choose a file to import',
+            extensions: ['csv', 'tsv', 'txt', 'xlsx', 'xlsm', 'parquet', 'duckdb', 'ddb',
+                         'db', 'sqlite', 'sqlite3']
+          }).then(function (r) {
+            button.disabled = false;
+            button.textContent = label;
+            if (!r.ok) return toast(r.error || 'Could not open the file dialog', 'err');
+            if (r.cancelled || !r.path) return;
+            $('#imp-path-input', root).value = r.path;
+            check();
+          });
+        };
         $('#imp-check', root).onclick = function () { check(); };
         $('#imp-run', root).onclick = function () { run(); };
 

@@ -30,7 +30,8 @@ built-in data enrichment.
   duplicates skipped, invalid addresses reported. **An email is optional**: a company with a
   description, a domain or a name is a contact too, and the rows that have no address simply
   cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
-  on disk, streamed and capped, with an optional SQL filter for DuckDB.
+  on disk — type it or press **Browse** for the system file window — streamed and capped, with an
+  optional SQL filter for DuckDB.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks

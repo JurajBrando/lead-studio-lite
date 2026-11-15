@@ -44,12 +44,24 @@ def main(argv=None):
     ap.add_argument("--video-maker", action="store_true",
                     help="render one video from a spec file (used by the Social tab)")
     ap.add_argument("--spec", default="", help="path to the video spec (with --video-maker)")
+    ap.add_argument("--pick-file", action="store_true",
+                    help="open a native file dialog and write the chosen path (import dialog)")
+    ap.add_argument("--out", default="", help="where --pick-file writes the chosen path")
+    ap.add_argument("--title", default="Choose a file", help="dialog title (with --pick-file)")
+    ap.add_argument("--extensions", default="", help="comma separated (with --pick-file)")
     ap.add_argument("--version", action="store_true")
     args = ap.parse_args(argv)
 
     if args.version:
         print("%s %s" % (config.APP_NAME, config.VERSION))
         return 0
+
+    if args.pick_file:
+        # A child process, so tkinter gets its own main thread and the dialog cannot
+        # disturb the server's event loop.
+        from engine import picker
+        return picker.main(["--out", args.out, "--title", args.title,
+                            "--extensions", args.extensions])
 
     if args.video_maker:
         # Runs as a child process of the app, so the render cannot block the server. On a

@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import brands, chat, connectors, demo, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
-from . import config, db
+from . import config, db, picker
 from .jobs.base import Context, Job
 
 PIXEL = base64.b64decode(
@@ -255,6 +255,15 @@ def r_lead_import(p):
     except Exception as e:
         config.log("import failed: %s\n%s" % (e, traceback.format_exc()))
         return {"ok": False, "error": "Could not read that file: %s" % e}
+
+
+def r_pick_file(p):
+    """Open a native file dialog on this computer and return the path it chose."""
+    try:
+        return picker.ask(str(p.get("title") or "Choose a file to import"),
+                          [str(x) for x in (p.get("extensions") or [])])
+    except picker.PickerError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def r_lead_inspect(p):
@@ -1101,6 +1110,7 @@ ROUTES_POST = {
     "/api/lead/import": r_lead_import,
     "/api/lead/import/path": r_lead_import_path,
     "/api/lead/inspect": r_lead_inspect,
+    "/api/dialog/pick": r_pick_file,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,
     "/api/sequence/delete": r_seq_delete,

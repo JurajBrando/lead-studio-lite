@@ -1,3 +1,23 @@
+## [1.10.1] - 2026-11-15
+
+A **Browse** button on the import dialog's "File on this computer" tab.
+
+### Added
+
+- The page cannot see a real path from a file input, and a 2 GB Parquet cannot be uploaded,
+  so *Browse* asks the server to open the operating system's own file window
+  (`engine/picker.py`: tkinter in a child process, so the dialog gets its own main thread and
+  its own process; the chosen path is written to a temp file, so the windowed build with no
+  stdout works too). `POST /api/dialog/pick` returns the path, the field fills in and the file
+  is checked immediately.
+- `leadstudio.py --pick-file --out <file>` is the child entry point (used by the packaged exe
+  as well).
+
+### Tests
+
+278 (was 271): the child command, the answer file, cancelling, a failing dialog, a build
+without tkinter, and the endpoint turning a dialog error into a normal error.
+
 ## [1.10.0] - 2026-11-15
 
 Contacts without an email address, and importing the multi-gigabyte files people actually have.

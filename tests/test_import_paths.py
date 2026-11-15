@@ -5,15 +5,17 @@ Run:  python -m unittest discover -s tests -v
 import importlib.util
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from engine import db, importer  # noqa: E402
+from engine import db, importer, picker  # noqa: E402
 
 HAVE_PYARROW = importlib.util.find_spec("pyarrow") is not None
 HAVE_DUCKDB = importlib.util.find_spec("duckdb") is not None
@@ -225,6 +227,73 @@ class PathImportTests(unittest.TestCase):
         res = importer.import_path(path, where="company = 'One'")
         self.assertFalse(res["ok"])
         self.assertIn("DuckDB", res["error"])
+
+
+class PickerTests(unittest.TestCase):
+    """The dialog itself is a child process; here it is faked by writing its answer file."""
+
+    def fake(self, answer, returncode=0, stderr=""):
+        def run(cmd, **kwargs):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w", encoding="utf-8") as handle:
+                handle.write(answer)
+            return subprocess.CompletedProcess(cmd, returncode, "", stderr)
+        return run
+
+    def test_the_child_writes_the_chosen_path_to_a_file(self):
+        with mock.patch.object(picker.subprocess, "run",
+                               side_effect=self.fake(r"C:\data\leads.parquet")):
+            result = picker.ask("Choose a file", ["parquet"])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["path"], r"C:\data\leads.parquet")
+        self.assertEqual(result["name"], "leads.parquet")
+
+    def test_cancelling_is_not_an_error(self):
+        with mock.patch.object(picker.subprocess, "run", side_effect=self.fake("")):
+            result = picker.ask()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["cancelled"])
+        self.assertNotIn("path", result)
+
+    def test_a_failing_child_is_reported(self):
+        with mock.patch.object(picker.subprocess, "run",
+                               side_effect=self.fake("", returncode=2, stderr="no display")):
+            with self.assertRaises(picker.PickerError) as ctx:
+                picker.ask()
+        self.assertIn("no display", str(ctx.exception))
+
+    def test_a_build_without_tkinter_says_so(self):
+        with mock.patch.object(picker, "available", return_value=False):
+            with self.assertRaises(picker.PickerError) as ctx:
+                picker.ask()
+        self.assertIn("tkinter", str(ctx.exception))
+
+    def test_the_command_reuses_this_app(self):
+        command = picker._command("answer.txt", "Choose", ("csv", "parquet"))
+        self.assertIn("--pick-file", command)
+        self.assertIn("answer.txt", command)
+        self.assertEqual(command[command.index("--extensions") + 1], "csv,parquet")
+        self.assertTrue(any(part.endswith("leadstudio.py") for part in command))
+
+
+class PickEndpointTests(unittest.TestCase):
+    def setUp(self):
+        from engine import server
+        self.server = server
+
+    def test_the_endpoint_returns_the_chosen_path(self):
+        with mock.patch.object(self.server.picker, "ask",
+                               return_value={"ok": True, "path": "C:/x/leads.csv"}):
+            answer = self.server.r_pick_file({"title": "x"})
+        self.assertEqual(answer["path"], "C:/x/leads.csv")
+
+    def test_a_dialog_error_becomes_a_normal_error(self):
+        with mock.patch.object(self.server.picker, "ask",
+                               side_effect=self.server.picker.PickerError("no dialog")):
+            answer = self.server.r_pick_file({})
+        self.assertFalse(answer["ok"])
+        self.assertIn("no dialog", answer["error"])
 
 
 if __name__ == "__main__":
