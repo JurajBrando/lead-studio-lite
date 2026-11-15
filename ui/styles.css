@@ -21,6 +21,49 @@
   --shadow: 0 10px 30px rgba(0, 0, 0, .35);
 }
 
+/* The light design: the same structure, one palette swap. Set by the toggle in the sidebar and
+   remembered in localStorage, so the choice survives a reload. */
+html[data-theme="light"] {
+  --bg: #f5f6fa;
+  --panel: #ffffff;
+  --panel-2: #f1f3f8;
+  --panel-3: #e6eaf2;
+  --line: #d8dde8;
+  --text: #141925;
+  --muted: #5a6478;
+  --dim: #8a93a6;
+  --accent: #2f6bff;
+  --accent-soft: rgba(47, 107, 255, .12);
+  --green: #0e9f6e;
+  --green-soft: rgba(14, 159, 110, .12);
+  --amber: #b7791f;
+  --amber-soft: rgba(183, 121, 31, .14);
+  --red: #d64545;
+  --red-soft: rgba(214, 69, 69, .12);
+  --violet: #6d4aff;
+  --shadow: 0 10px 30px rgba(16, 24, 40, .10);
+}
+
+html[data-theme="light"] body { color-scheme: light; }
+html[data-theme="light"] .sidebar { background: linear-gradient(180deg, #ffffff, #f2f4f9 60%); }
+html[data-theme="light"] .mono,
+html[data-theme="light"] pre.log { background: #eef1f7; color: #1a2130; }
+html[data-theme="light"] table th { color: var(--muted); }
+html[data-theme="light"] .avatar { background: var(--panel-3); color: var(--text); }
+html[data-theme="light"] input,
+html[data-theme="light"] select,
+html[data-theme="light"] textarea { background: #fff; color: var(--text); }
+html[data-theme="light"] .logo { background: linear-gradient(135deg, #2f6bff, #6d4aff); }
+html[data-theme="light"] .nav-item { color: #3c465c; }
+html[data-theme="light"] .nav-item:hover { background: #e9edf6; }
+html[data-theme="light"] .toasts .toast { box-shadow: 0 10px 24px rgba(16, 24, 40, .16); }
+
+.theme-toggle {
+  margin-top: 10px;
+  width: 100%;
+  justify-content: center;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -176,6 +219,19 @@ tbody td { padding: 9px 10px; border-bottom: 1px solid rgba(36,42,55,.6); vertic
 tbody tr:hover td { background: rgba(255,255,255,.017); }
 tbody tr:last-child td { border-bottom: 0; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* The campaigns table: one row per sequence, numbers right-aligned, header pinned. */
+table.campaigns th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+  white-space: nowrap;
+}
+table.campaigns td { vertical-align: top; padding-top: 10px; padding-bottom: 10px; }
+table.campaigns td:first-child { min-width: 280px; }
+table.campaigns tbody tr:hover { background: var(--panel-2); }
+table.campaigns tbody tr + tr { border-top: 1px solid var(--line); }
 .t-email { color: var(--text); font-weight: 550; }
 .t-sub { color: var(--dim); font-size: 11.5px; }
 

@@ -40,15 +40,27 @@ def _paths():
     return merged
 
 
+def _product_link():
+    """The HYROS link: the affiliate URL from the Toolbox when there is one, else the plain page."""
+    rows = db.rows("SELECT name, affiliate_url FROM offers WHERE active=1 "
+                   "AND affiliate_url<>'' ORDER BY id")
+    for row in rows:
+        if "HYROS" in (row["name"] or "").upper():
+            return row["affiliate_url"], True
+    return LINKS["product"], False
+
+
 def status():
     hyros = ads.status("hyros")
     block = _block()
+    product, affiliate = _product_link()
     return {"has_key": hyros["has_key"],
             "base_url": hyros["base_url"] or BASE,
             "last_ok": hyros["last_ok"], "last_status": hyros["last_status"],
             "last_pull": int(block.get("last_pull") or 0),
             "last_count": int(block.get("last_count") or 0),
-            "paths": _paths(), "links": LINKS,
+            "paths": _paths(),
+            "links": {**LINKS, "product": product, "affiliate": affiliate},
             "note": "HYROS AIR is a paid Hyros add-on (Enterprise). This page reads what it did "
                     "in your Hyros account through the HYROS API key from the Ad Tracking tab."}
 

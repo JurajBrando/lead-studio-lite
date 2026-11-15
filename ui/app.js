@@ -776,39 +776,133 @@
   }
 
   // ---- sequences
-  function viewSequences(d) {
-    var html = pageHead('Sequences', 'Multi-step email cadences, paced per mailbox.',
-      '<button class="btn primary" data-act="new-sequence">New sequence</button>');
-    if (!d.sequences.length) {
-      return html + '<div class="card"><div class="empty"><div class="big">No sequences yet</div>' +
-        '<p>A sequence is a series of emails with delays: day 0 intro, day 3 follow-up, day 7 close.</p>' +
-        '<button class="btn primary" data-act="new-sequence">Build the first one</button></div></div>';
-    }
-    html += '<div class="grid cols-2">';
-    d.sequences.forEach(function (s) {
-      html += '<div class="card"><div class="card-head"><div><h2>' + h(s.name) + '</h2>' +
-        '<div class="card-sub">' + h(s.description || 'No description') + '</div></div>' +
-        '<div class="spacer"></div><span class="badge ' + (s.active ? 'green' : 'grey') + '">' +
-        s.steps.length + ' steps</span></div>' +
-        '<div class="steps">' + s.steps.map(function (st) {
-          return '<div class="step-card"><div class="step-head"><span class="step-no">' + st.step_no + '</span>' +
-            '<div><div class="small">' + h(st.subject || '(no subject)') + '</div>' +
-            '<div class="step-delay">' + (st.step_no === 1 ? 'sends immediately' :
-              'wait ' + st.delay_days + ' day' + (st.delay_days === 1 ? '' : 's')) + '</div></div></div>' +
-            (st.body ? '<div class="t-sub" style="margin-top:6px">' + h(st.body.replace(/\s+/g, ' ').slice(0, 110)) +
-              (st.body.length > 110 ? '...' : '') + '</div>' : '') + '</div>';
-        }).join('') + '</div>' +
-        '<div class="toolbar mt"><span class="small dim">' + num(s.enrolled) + ' enrolled · ' +
-        num(s.sent) + ' sent</span><div class="spacer" style="flex:1"></div>' +
-        '<button class="btn sm" data-enroll="' + s.id + '">Enroll leads</button>' +
-        '<button class="btn sm" data-edit-seq="' + s.id + '">Edit</button>' +
-        '<button class="btn sm danger" data-del-seq="' + s.id + '">Delete</button></div></div>';
+  // ---- sequences: the campaign table
+  function seqFolder(name) {
+    var clean = String(name || '').replace(/^\[[A-Z]+\]\s*/, '');
+    return clean.split('|')[0].trim() || 'Other';
+  }
+
+  function seqTag(name) {
+    var clean = String(name || '').replace(/^\[[A-Z]+\]\s*/, '');
+    var parts = clean.split('|').map(function (p) { return p.trim(); });
+    return parts.length > 1 ? parts[1] : 'Other';
+  }
+
+  function seqVisible(d) {
+    var query = (state.seqQuery || '').toLowerCase();
+    return (d.sequences || []).filter(function (s) {
+      if (state.seqFolder && seqFolder(s.name) !== state.seqFolder) return false;
+      if (state.seqTag && seqTag(s.name) !== state.seqTag) return false;
+      if (state.seqStatus && s.status !== state.seqStatus) return false;
+      if (query && (s.name || '').toLowerCase().indexOf(query) < 0) return false;
+      return true;
     });
-    html += '</div>';
+  }
+
+  function seqNumber(value, pctOf) {
+    var text = num(value || 0);
+    if (pctOf && value) {
+      return '<div>' + text + '</div><div class="small dim">' +
+        Math.round((value / pctOf) * 100) + '%</div>';
+    }
+    return '<div>' + text + '</div>';
+  }
+
+  function viewSequences(d) {
+    var sequences = d.sequences || [];
+    var folders = [], tags = [];
+    sequences.forEach(function (s) {
+      var folder = seqFolder(s.name), tag = seqTag(s.name);
+      if (folders.indexOf(folder) < 0) folders.push(folder);
+      if (tags.indexOf(tag) < 0) tags.push(tag);
+    });
+    folders.sort(); tags.sort();
+    var rows = seqVisible(d);
+
+    var html = pageHead('Campaigns', 'Campaigns, their prospects and what came back. ' +
+      num(sequences.length) + ' in this workspace.',
+      '<button class="btn primary" data-act="new-sequence">Create campaign</button>');
+
+    html += '<div class="card tight" style="margin-bottom:12px"><div class="toolbar" style="margin:0">' +
+      '<select id="seq-folder" style="max-width:150px"><option value="">All Folders</option>' +
+      folders.map(function (f) {
+        return '<option value="' + h(f) + '"' + (state.seqFolder === f ? ' selected' : '') + '>' +
+          h(f) + '</option>';
+      }).join('') + '</select>' +
+      '<select id="seq-tag" style="max-width:150px"><option value="">All Tags</option>' +
+      tags.map(function (t) {
+        return '<option value="' + h(t) + '"' + (state.seqTag === t ? ' selected' : '') + '>' +
+          h(t) + '</option>';
+      }).join('') + '</select>' +
+      '<select id="seq-status" style="max-width:150px"><option value="">All Statuses</option>' +
+      ['draft', 'running', 'paused', 'finished'].map(function (status) {
+        return '<option value="' + status + '"' + (state.seqStatus === status ? ' selected' : '') +
+          '>' + status.charAt(0).toUpperCase() + status.slice(1) + '</option>';
+      }).join('') + '</select>' +
+      '<input type="search" id="seq-search" placeholder="Search campaigns" style="max-width:220px" value="' +
+      h(state.seqQuery || '') + '">' +
+      '<div class="spacer" style="flex:1"></div>' +
+      '<a class="btn sm ghost" href="#settings">Settings</a></div></div>';
+
+    if (!sequences.length) {
+      return html + '<div class="card"><div class="empty"><div class="big">No campaigns yet</div>' +
+        '<p>A campaign is a series of emails with delays: day 0 intro, day 3 follow-up, day 7 close.</p>' +
+        '<button class="btn primary" data-act="new-sequence">Create the first one</button></div></div>';
+    }
+
+    html += '<div class="card" style="padding:0"><div class="table-wrap"><table class="campaigns">' +
+      '<thead><tr><th>Campaign</th><th class="num">prospects</th><th class="num">Reached</th>' +
+      '<th class="num">opened</th><th class="num">clicked</th><th class="num">resp.</th>' +
+      '<th class="num">inter.</th><th class="num">opp.</th><th class="num">24h</th>' +
+      '<th class="num">Actions</th></tr></thead><tbody>' +
+      rows.map(function (s) {
+        var m = s.metrics || {};
+        var when = s.created_ts ? fmtDate(s.created_ts) : '';
+        return '<tr><td><div><strong>' + h(s.name) + '</strong> ' +
+          '<span class="badge ' + (s.status === 'running' ? 'green' :
+            s.status === 'paused' ? 'amber' : 'grey') + '">' + h(s.status) + '</span></div>' +
+          '<div class="small dim">' + h(when) + ' · ' + num(m.senders || 0) + ' senders · ' +
+          num((s.steps || []).length) + ' steps</div></td>' +
+          '<td class="num">' + seqNumber(m.prospects) + '</td>' +
+          '<td class="num">' + seqNumber(m.reached) + '</td>' +
+          '<td class="num">' + seqNumber(m.opened, m.reached) + '</td>' +
+          '<td class="num">' + seqNumber(m.clicked, m.reached) + '</td>' +
+          '<td class="num">' + seqNumber(m.replied, m.reached) + '</td>' +
+          '<td class="num">' + seqNumber(m.interested) + '</td>' +
+          '<td class="num">' + seqNumber(m.won, m.prospects) + '</td>' +
+          '<td class="num">' + seqNumber(m.last24) + '</td>' +
+          '<td class="num"><div class="nowrap">' +
+          '<button class="btn sm ghost" data-enroll="' + s.id + '">Enroll</button> ' +
+          '<button class="btn sm" data-edit-seq="' + s.id + '">Open</button> ' +
+          '<button class="btn sm danger" data-del-seq="' + s.id + '">Delete</button>' +
+          '</div></td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+
+    html += '<div class="small dim mt">' + num(rows.length) + ' of ' + num(sequences.length) +
+      ' campaigns. Opened, clicked and replied are percentages of Reached; opp. is won over ' +
+      'prospects. 24h counts the sends of the last day.</div>';
     return html;
   }
 
   function wireSequences() {
+    var folder = $('#seq-folder');
+    if (folder) folder.onchange = function () { state.seqFolder = folder.value; render(); };
+    var tag = $('#seq-tag');
+    if (tag) tag.onchange = function () { state.seqTag = tag.value; render(); };
+    var status = $('#seq-status');
+    if (status) status.onchange = function () { state.seqStatus = status.value; render(); };
+    var search = $('#seq-search');
+    if (search) {
+      search.oninput = function () {
+        state.seqQuery = search.value;
+        render();
+        var again = $('#seq-search');
+        if (again && document.activeElement !== again) {
+          again.focus();
+          again.setSelectionRange(again.value.length, again.value.length);
+        }
+      };
+    }
 
     $$('[data-edit-seq]').forEach(function (b) {
       b.onclick = function () { sequenceEditor(Number(b.dataset.editSeq)); };
@@ -1306,7 +1400,9 @@
       'HYROS AIR is a paid Hyros service - subscribe to it and manage it at Hyros. This page is ' +
       'only the client: it reads what the agent did in your account with your HYROS API key.',
       '<a class="btn" href="' + h((info && info.links && info.links.product) ||
-        'https://hyros.com/enterprise') + '" target="_blank" rel="noopener">Hyros Enterprise</a>' +
+        'https://hyros.com/enterprise') + '" target="_blank"' +
+      ((info && info.links && info.links.affiliate) ? ' rel="noopener sponsored"' : ' rel="noopener"') +
+      '>Hyros Enterprise</a>' +
       '<a class="btn" href="' + h((info && info.links && info.links.api) ||
         'https://api-docs.hyros.com/') + '" target="_blank" rel="noopener">API docs</a>');
     if (!info) {
@@ -1316,7 +1412,10 @@
     html += '<div class="callout"><strong>What this is.</strong> HYROS AIR is an AI sales agent sold ' +
       'by Hyros, not something this app runs. Everything it produces lives in your Hyros account, ' +
       'and the HYROS API exposes it with the same key the Ad Tracking tab stores. Nothing on this ' +
-      'page is generated locally.</div>';
+      'page is generated locally.' +
+      ((info.links && info.links.affiliate)
+        ? ' The Hyros Enterprise button opens the link from your Toolbox, which is an affiliate ' +
+          'link: we may earn a commission at no extra cost to you.' : '') + '</div>';
     html += '<div class="card"><div class="card-head"><h2>Connection</h2><div class="spacer"></div>' +
       '<span class="badge ' + (info.has_key ? 'green' : 'amber') + '">' +
       (info.has_key ? 'HYROS API key saved' : 'no HYROS API key') + '</span></div>' +
@@ -4670,9 +4769,38 @@
     paintChrome();
   }
 
+  // ---- design: dark by default, light on request, remembered on this computer
+  function themeNow() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function paintTheme() {
+    var button = $('#theme-toggle');
+    if (button) button.textContent = themeNow() === 'light' ? 'Dark design' : 'Light design';
+  }
+
+  function setTheme(value) {
+    if (value === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('ls-theme', value); } catch (e) { /* private mode */ }
+    paintTheme();
+  }
+
+  (function bootTheme() {
+    try {
+      if (localStorage.getItem('ls-theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    } catch (e) { /* private mode */ }
+  })();
+
   document.addEventListener('click', function (e) {
     var t = e.target.closest('[data-nav]');
     if (t) { go(t.dataset.nav); return; }
+    if (e.target.closest('#theme-toggle')) {
+      setTheme(themeNow() === 'light' ? 'dark' : 'light');
+      return;
+    }
     var a = e.target.closest('[data-act]');
     if (a && actions[a.dataset.act]) { actions[a.dataset.act](a, e); }
   });
@@ -4684,6 +4812,7 @@
 
   var initial = (location.hash || '').replace('#', '');
   if (VIEWS.indexOf(initial) >= 0) state.view = initial;
+  paintTheme();
   refresh();
   if (state.view === 'leads') loadLeads();
   if (state.view === 'domains') loadDomains();

@@ -1,3 +1,32 @@
+## [1.22.0] - 2026-11-15
+
+A light design, the affiliate link on HYROS, and campaigns as a table.
+
+### Added
+
+- **Light design.** A toggle at the bottom of the sidebar switches the whole app between the dark
+  design and a light one (`html[data-theme="light"]` swaps the palette, including the sidebar, the
+  tables, the inputs and the code blocks). The choice is remembered in `localStorage`, so a reload
+  keeps it. The light theme is one palette block in `ui/styles.css`, not a second stylesheet.
+- **Campaigns table.** The Sequences page is now a table like a sending platform: a toolbar with
+  **All Folders / All Tags / All Statuses**, a search box and *Settings*, then one row per
+  campaign — name, status, date, senders and steps, and the numbers
+  **prospects · Reached · opened · clicked · resp. · inter. · opp. · 24h**, with *Enroll / Open /
+  Delete* at the end. Opened, clicked and replied are shown as a percentage of Reached, opp. as won
+  over prospects, and 24h counts the sends of the last day.
+- `/api/state` now carries those per-campaign metrics (nine aggregates over `enrollments`, `sends`,
+  `replies` and `leads`) plus a derived status: running, paused, draft or finished.
+
+### Changed
+
+- The **Hyros Enterprise** button uses the HYROS affiliate link from the Toolbox (offers table)
+  instead of a plain link, marked `rel="noopener sponsored"` with a one-line disclosure under the
+  callout. Falls back to the plain page when no HYROS offer has a link.
+
+### Tests
+
+416 (unchanged count; the API shape tests still pass with the extra fields).
+
 ## [1.21.0] - 2026-11-15
 
 Hyros, built on the published API instead of guesses.

@@ -69,13 +69,45 @@ def r_state():
             "sent_today": pipeline.sent_today(b["id"]),
         })
     seqs = []
-    for sq in db.rows("SELECT * FROM sequences ORDER BY id"):
+    day_ago = int(time.time()) - 86400
+    for sq in db.rows("SELECT * FROM sequences ORDER BY COALESCE(created_ts,0) DESC, id DESC"):
         steps = db.rows("SELECT * FROM steps WHERE sequence_id=? ORDER BY step_no", (sq["id"],))
-        seqs.append({**sq, "steps": steps, "enrolled": db.scalar(
-            "SELECT COUNT(*) FROM enrollments WHERE sequence_id=?", (sq["id"],)),
-            "sent": db.scalar(
-                "SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-                "WHERE e.sequence_id=? AND s.status='sent'", (sq["id"],))})
+        mid = sq["id"]
+        metrics = db.one(
+            "SELECT "
+            "(SELECT COUNT(*) FROM enrollments e WHERE e.sequence_id=?) AS prospects,"
+            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
+            " WHERE e.sequence_id=? AND s.status='sent') AS reached,"
+            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
+            " WHERE e.sequence_id=? AND s.opened_ts>0) AS opened,"
+            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
+            " WHERE e.sequence_id=? AND s.clicked_ts>0) AS clicked,"
+            "(SELECT COUNT(DISTINCT r.lead_id) FROM replies r JOIN enrollments e ON e.lead_id=r.lead_id "
+            " WHERE e.sequence_id=? AND r.is_bounce=0) AS replied,"
+            "(SELECT COUNT(DISTINCT l.id) FROM leads l JOIN enrollments e ON e.lead_id=l.id "
+            " WHERE e.sequence_id=? AND l.status IN ('interested','won')) AS interested,"
+            "(SELECT COUNT(DISTINCT l.id) FROM leads l JOIN enrollments e ON e.lead_id=l.id "
+            " WHERE e.sequence_id=? AND l.status='won') AS won,"
+            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
+            " WHERE e.sequence_id=? AND s.status='sent' AND s.sent_ts>=?) AS last24,"
+            "(SELECT COUNT(DISTINCT s.mailbox_id) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
+            " WHERE e.sequence_id=? AND s.mailbox_id>0) AS senders",
+            (mid, mid, mid, mid, mid, mid, mid, mid, day_ago, mid))
+        state = db.one(
+            "SELECT SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running, "
+            "SUM(CASE WHEN status='paused' THEN 1 ELSE 0 END) AS paused, "
+            "COUNT(*) AS total FROM enrollments WHERE sequence_id=?", (mid,)) or {}
+        if (state.get("running") or 0) > 0:
+            status = "running"
+        elif (state.get("total") or 0) == 0:
+            status = "draft"
+        elif (state.get("paused") or 0) > 0:
+            status = "paused"
+        else:
+            status = "finished"
+        seqs.append({**sq, "steps": steps, "enrolled": metrics["prospects"],
+                     "sent": metrics["reached"], "metrics": metrics,
+                     "status": status, "created_ts": int(sq.get("created_ts") or 0)})
     with WORKER_LOCK:
         worker = dict(WORKER)
     return {"ok": True, "settings": public, "stats": pipeline.stats(), "mailboxes": mailboxes,
