@@ -1,3 +1,29 @@
+## [1.17.0] - 2026-11-15
+
+Several inboxes, really: the queue spreads over them and the inbox merges them.
+
+### Added
+
+- **The inbox is one list for every mailbox.** `/api/inbox` joins the mailbox a reply came from,
+  returns per-mailbox totals and unread counts, and takes `mailbox_id` to filter. The Inbox page
+  gained a mailbox select (All mailboxes, then each with its unread count and total), a mailbox
+  chip on every row, and an empty state that points at *Mailboxes* when none is connected yet.
+- **The send queue rotates.** A send now goes to the mailbox with room under its daily limit that
+  has been quiet longest; a mailbox at its cap is skipped instead of stalling the queue for an
+  hour, and only when every mailbox is full does the tick report that.
+
+### Changed
+
+- README repositioned: source leads, enrich them, work several inboxes as one - instead of "a
+  small SDR app". The old "bad fit: anyone wanting built-in data enrichment / teams needing shared
+  inboxes" no longer describes the product.
+
+### Tests
+
+373 (was 361): the inbox merging two mailboxes, per-mailbox totals and unread, the filter, the
+newest-first order, the account-wide unread count, and the rotation (quietest first, a capped
+mailbox skipped, an explicit mailbox never swapped).
+
 ## [1.16.0] - 2026-11-15
 
 Manyreach through its REST API v2, next to the MCP connection.

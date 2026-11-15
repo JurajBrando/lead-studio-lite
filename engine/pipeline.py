@@ -39,8 +39,26 @@ def active_mailboxes():
 def mailbox_for(box_id):
     if box_id:
         return db.one("SELECT * FROM mailboxes WHERE id=?", (box_id,))
-    boxes = active_mailboxes()
+    boxes = mailbox_candidates()
     return boxes[0] if boxes else None
+
+
+def mailbox_candidates():
+    """Every active mailbox, best next first.
+
+    With more than one mailbox the queue spreads: a mailbox that still has room under its
+    daily limit comes before one that does not, and among equals the one that has been quiet
+    longest goes first. That is what keeps two or five inboxes working at once instead of
+    everything going out of the first one until it caps.
+    """
+    boxes = active_mailboxes()
+    if not boxes:
+        return []
+    def room(box):
+        return int(box.get("daily_limit") or 30) - sent_today(box["id"])
+    with_room = [box for box in boxes if room(box) > 0]
+    pool = with_room or boxes
+    return sorted(pool, key=lambda box: (int(box.get("last_send_ts") or 0), box["id"]))
 
 
 def sent_today(box_id):
@@ -307,14 +325,19 @@ def _tick(force=False):
     if not due:
         return {"ok": True, "action": "idle", "reason": "Nothing is due right now."}
     en = due[0]
-    box = mailbox_for(en.get("mailbox_id") or 0)
-    if not box:
+    explicit = en.get("mailbox_id") or 0
+    candidates = [box for box in ([mailbox_for(explicit)] if explicit else mailbox_candidates())
+                  if box]
+    if not candidates:
         return {"ok": False, "action": "blocked", "reason": "No active mailbox configured."}
-    # The daily cap is always enforced, even for a manual "send next now".
-    if sent_today(box["id"]) >= int(box.get("daily_limit") or 30):
+    # Skip a mailbox that is at its cap instead of stalling the queue for an hour - the next
+    # one gets the send.
+    box = next((one for one in candidates
+                if sent_today(one["id"]) < int(one.get("daily_limit") or 30)), None)
+    if not box:
         db.update("enrollments", en["id"], {"next_run_ts": int(time.time()) + 3600})
         return {"ok": True, "action": "idle",
-                "reason": "%s reached its daily limit (%s)." % (box["name"], box["daily_limit"])}
+                "reason": "Every mailbox reached its daily limit (%d)." % len(candidates)}
     if not force:
         ready, wait = gap_ready(box, s)
         if not ready:

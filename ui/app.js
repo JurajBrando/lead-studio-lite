@@ -823,43 +823,70 @@
 
   // ---- inbox
   function viewInbox(d) {
-    var html = pageHead('Inbox', 'Replies and bounces the queue noticed.',
-      '<button class="btn" data-act="sync">Check mail now</button>');
-    if (!d.mailboxes.some(function (b) { return b.imap_host; })) {
+    var boxes = d.mailboxes || [];
+    var imap = boxes.filter(function (b) { return b.imap_host; }).length;
+    var html = pageHead('Inbox', 'One inbox for every mailbox. Replies and bounces are collected from ' +
+      'all of them, matched to the lead, and the sequence stops.',
+      '<button class="btn" data-act="sync">Check all mailboxes</button>');
+    if (!boxes.length) {
+      html += '<div class="callout"><strong>No mailbox yet.</strong> Add one in <em>Mailboxes</em> — ' +
+        'every mailbox you add feeds this same list, and sending rotates across them.</div>';
+    } else if (!imap) {
       html += '<div class="callout"><strong>Replies need IMAP.</strong> Add an IMAP server to a mailbox in ' +
         'Mailboxes so Lead Studio can see who answered, and stop their sequence automatically.</div>';
     }
     html += '<div class="card" id="inbox-card"><div class="small dim">Loading replies...</div></div>';
-    setTimeout(loadInbox, 20);
+    setTimeout(function () { loadInbox(0); }, 20);
     return html;
   }
 
-  function loadInbox() {
-    call('/api/inbox?limit=120').then(function (res) {
+  function loadInbox(mailboxId) {
+    call('/api/inbox?limit=200' + (mailboxId ? '&mailbox_id=' + mailboxId : '')).then(function (res) {
       var card = $('#inbox-card');
       if (!card) return;
       if (!res.ok) { card.innerHTML = '<div class="small dim">' + h(res.error) + '</div>'; return; }
+      var boxes = res.mailboxes || [];
+      var head = '<div class="card-head"><h2>Unified inbox</h2><div class="spacer"></div>' +
+        '<span class="badge ' + (res.unread ? 'blue' : 'grey') + '">' + num(res.unread) + ' unread</span> ' +
+        '<select id="inbox-box" style="max-width:270px"><option value="0">All mailboxes · ' +
+        num(boxes.length) + '</option>' + boxes.map(function (b) {
+          return '<option value="' + b.id + '"' + (Number(mailboxId) === b.id ? ' selected' : '') +
+            '>' + h(b.name) + (b.unread ? ' · ' + b.unread + ' new' : '') +
+            ' (' + num(b.total) + ')</option>';
+        }).join('') + '</select></div>' +
+        (res.orphans ? '<div class="small dim">' + num(res.orphans) +
+          ' replies came from a mailbox that has since been removed.</div>' : '');
       if (!res.replies.length) {
-        card.innerHTML = '<div class="empty"><div class="big">No replies yet</div>' +
+        card.innerHTML = head + '<div class="empty"><div class="big">No replies yet</div>' +
           '<p>When someone answers one of your emails it lands here, their sequence stops, ' +
           'and their status flips to replied.</p></div>';
-        return;
+      } else {
+        card.innerHTML = head + '<div class="list">' + res.replies.map(function (r) {
+          return '<div class="list-item"><div class="avatar">' +
+            h((r.from_email || '?').slice(0, 2).toUpperCase()) + '</div>' +
+            '<div class="grow"><div><strong>' + h(r.subject || '(no subject)') + '</strong> ' +
+            (r.seen ? '' : '<span class="badge blue">new</span> ') +
+            (r.is_bounce ? '<span class="badge red">bounce</span>' : '<span class="badge green">reply</span>') +
+            (r.mailbox_name ? ' <span class="badge grey">' + h(r.mailbox_name) + '</span>' : '') +
+            '</div><div class="t-sub">' + h(r.from_email) + (r.company ? ' · ' + h(r.company) : '') +
+            ' · ' + fmtWhen(r.received_ts) + '</div>' +
+            (r.snippet ? '<div class="small muted" style="margin-top:4px">' + h(r.snippet) + '</div>' : '') +
+            '</div><div class="nowrap">' +
+            (r.seen ? '' : '<button class="btn sm ghost" data-seen="' + r.id + '">Mark read</button>') +
+            '</div></div>';
+        }).join('') + '</div>';
+        $$('[data-seen]').forEach(function (b) {
+          b.onclick = function () {
+            call('/api/inbox/seen', { id: Number(b.dataset.seen) }).then(function () {
+              loadInbox(mailboxId); refresh();
+            });
+          };
+        });
       }
-      card.innerHTML = '<div class="list">' + res.replies.map(function (r) {
-        return '<div class="list-item"><div class="avatar">' + h((r.from_email || '?').slice(0, 2).toUpperCase()) + '</div>' +
-          '<div class="grow"><div><strong>' + h(r.subject || '(no subject)') + '</strong> ' +
-          (r.seen ? '' : '<span class="badge blue">new</span> ') +
-          (r.is_bounce ? '<span class="badge red">bounce</span>' : '<span class="badge green">reply</span>') +
-          '</div><div class="t-sub">' + h(r.from_email) + (r.company ? ' · ' + h(r.company) : '') +
-          ' · ' + fmtWhen(r.received_ts) + '</div>' +
-          (r.snippet ? '<div class="small muted" style="margin-top:4px">' + h(r.snippet) + '</div>' : '') +
-          '</div><div class="nowrap"><button class="btn sm ghost" data-seen="' + r.id + '">Mark read</button></div></div>';
-      }).join('') + '</div>';
-      $$('[data-seen]').forEach(function (b) {
-        b.onclick = function () {
-          call('/api/inbox/seen', { id: Number(b.dataset.seen) }).then(function () { loadInbox(); refresh(); });
-        };
-      });
+      var select = $('#inbox-box');
+      if (select) {
+        select.onchange = function () { loadInbox(Number(select.value) || 0); };
+      }
     });
   }
 

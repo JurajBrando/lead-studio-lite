@@ -654,11 +654,26 @@ def r_inbox_sync(p):
 
 
 def r_inbox(q):
+    """One inbox for every mailbox: the list, and a per-mailbox count beside it."""
+    mailbox = int(q.get("mailbox_id") or 0)
+    where, args = "", []
+    if mailbox:
+        where = " WHERE r.mailbox_id=?"
+        args.append(mailbox)
     rows = db.rows(
-        "SELECT r.*, l.company, l.status AS lead_status FROM replies r "
-        "LEFT JOIN leads l ON l.id=r.lead_id ORDER BY r.received_ts DESC LIMIT ?",
-        (min(300, int(q.get("limit") or 100)),))
-    return {"ok": True, "replies": rows,
+        "SELECT r.*, l.company, l.status AS lead_status, m.name AS mailbox_name, "
+        "m.from_email AS mailbox_email FROM replies r "
+        "LEFT JOIN leads l ON l.id=r.lead_id "
+        "LEFT JOIN mailboxes m ON m.id=r.mailbox_id" + where +
+        " ORDER BY r.received_ts DESC LIMIT ?",
+        tuple(args) + (min(300, int(q.get("limit") or 100)),))
+    boxes = db.rows(
+        "SELECT m.id, m.name, m.from_email, COUNT(r.id) AS total, "
+        "COALESCE(SUM(CASE WHEN r.seen=0 THEN 1 ELSE 0 END), 0) AS unread "
+        "FROM mailboxes m LEFT JOIN replies r ON r.mailbox_id=m.id "
+        "GROUP BY m.id ORDER BY (unread > 0) DESC, m.name")
+    orphans = db.scalar("SELECT COUNT(*) FROM replies WHERE mailbox_id=0")
+    return {"ok": True, "replies": rows, "mailboxes": boxes, "orphans": orphans,
             "unread": db.scalar("SELECT COUNT(*) FROM replies WHERE seen=0")}
 
 

@@ -1,12 +1,24 @@
 # Lead Studio Lite
 
-A small, local-first **sales development (SDR) app for Windows**. Import leads, verify their email
-addresses, send multi-step sequences *from your own mailbox*, and let it stop the sequence the moment
-someone replies.
+**Your own outbound desk: source leads, enrich them, and run several inboxes as one.**
 
-No account, no subscription, no cloud — your lead list never leaves your computer.
+A local-first sales development app for Windows that covers the whole loop — sourcing, enrichment,
+sequencing, sending and answering — without a subscription. Your leads, your mailboxes and your
+replies live in a SQLite file on your computer.
 
-**Python 3.9+ · MIT · ~4,000 lines · no runtime dependencies**
+- **Source** — import CSV, Excel, Parquet, DuckDB or SQLite; pull domains from three open datasets
+  (Common Crawl web graph, registered domains, Certificate Transparency); scrape a site for contact
+  details; or start from the scraped contact table published on Hugging Face.
+- **Enrich** — verify addresses (syntax, typo domains, MX, disposable, role accounts), segment by
+  country, industry, company size, technologies, location and source, and enrich domains against
+  the live Common Crawl index.
+- **Work many inboxes** — add as many mailboxes as you have. The queue rotates across them inside
+  each mailbox's daily cap, and every reply or bounce from every mailbox lands in **one unified
+  inbox** that stops the sequence and flips the lead.
+
+No account, no subscription, no cloud — your list never leaves your computer.
+
+**Python 3.9+ · MIT · ~15,000 lines · no runtime dependencies**
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
@@ -14,14 +26,15 @@ No account, no subscription, no cloud — your lead list never leaves your compu
 
 ## Why this exists
 
-Most cold-email tools charge $50–200 a month and keep your prospect list in their database. If you
-send a few hundred emails a month, you don't need a sending platform — you need pacing, templates,
-reply detection and a place to see who you contacted. That's what this is. One folder, one
-double-click, your data in a SQLite file you own.
+Most outbound tools sell one slice each: a data vendor for leads, a verifier for addresses, a
+sending platform for mailboxes, a separate inbox for replies — and each one keeps a copy of your
+data. Lead Studio Lite is the whole loop in one folder, with the data in a file you own.
 
-**Good fit:** freelancers, consultants, small agencies, founders doing their own outbound.
-**Bad fit:** high-volume senders (10k+/month), teams needing shared inboxes, anyone wanting
-built-in data enrichment.
+**Good fit:** freelancers, consultants, small agencies, founders doing their own outbound — anyone
+running a handful of mailboxes and a few hundred to a few thousand emails a month who wants to
+build the list as well as work it.
+**Bad fit:** high-volume senders (10k+ a month from one mailbox), teams needing role-based shared
+inbox permissions, or anyone looking for a managed data vendor.
 
 ## Features
 
@@ -51,9 +64,14 @@ built-in data enrichment.
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks
   (`{{first_name|there}}`), automatic stop on reply.
+- **Many mailboxes, one queue, one inbox** — every active mailbox is in the rotation: a send goes
+  to the mailbox with room under its daily cap that has been quiet longest, and one at its limit is
+  skipped instead of stalling the queue. Replies and bounces from all of them are collected into
+  one list, filterable per mailbox, each row showing which mailbox it came from.
 - **Sends from your inbox** — SMTP with STARTTLS/SSL, sending window, gap + jitter between messages,
   weekday-only mode, per-mailbox daily cap.
-- **Reads your replies** — IMAP polling marks replies and bounces, stops sequences, updates the lead.
+- **Reads your replies** — IMAP polling on every mailbox marks replies and bounces, stops
+  sequences, updates the lead, and shows them all in the unified inbox.
 - **Local pipeline** — new → contacted → replied → interested → won / lost, plus unsubscribe and
   bounce suppression.
 - **Open/click tracking** and **unsubscribe links** (optional; off unless you set a public URL).
