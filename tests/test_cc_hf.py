@@ -24,7 +24,7 @@ class HfDataTests(unittest.TestCase):
         self.assertTrue(info["url"].startswith("https://huggingface.co/datasets/"))
         names = [entry["name"] for entry in info["files"]]
         self.assertIn("rec_results.duckdb", names)
-        self.assertIn("domains.txt", names)
+        self.assertNotIn("domains.txt", names)      # the domain catalogue comes from open data
         for entry in info["files"]:
             self.assertTrue(entry["url"].endswith("/resolve/main/" + entry["name"]))
 
