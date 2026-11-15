@@ -99,10 +99,10 @@ GROUP_ORDER = ("Domains", "Signals", "Data", "AI")
 # the user's; this is only the order the page shows them in.
 CHAIN_ORDER = {
     "new_domains": 10, "domain_mx": 20, "commoncrawl": 30, "cc_hf": 35, "cc_bulk": 38,
-    "contact_finder": 40, "cc_contacts": 45,
+    "contact_finder": 40, "cc_contacts": 45, "osm_business": 50,
     "phishing_watch": 10, "hiring_signals": 20, "bankruptcy_watch": 30, "brand_watch": 40,
-    "ads_transparency": 50,
-    "merge_files": 10,
+    "ads_transparency": 50, "hot_list": 60,
+    "merge_files": 10, "pipeline_all": 20,
     "ai_enrich": 10,
 }
 

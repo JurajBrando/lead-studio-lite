@@ -1,3 +1,39 @@
+## [1.30.0] - 2026-11-16
+
+Three jobs that call the older tooling, instead of re-inventing it.
+
+### Added
+
+- **Run the whole pipeline** (Data, daily 07:15): runs `LEAD_STUDIO/daily_pipeline.py run` — new
+  domains (smet.cz + WhoisExtractor) → Google Ads Transparency → fraud listings (Watchlist +
+  Phishing.Database) → Red Points cases against the brand dataset → cross-check of new domains
+  against the fraud lists. Stages are declared in `PIPELINE/config.json`, a failing stage does not
+  stop the rest, and the job parses the report's `handoffs` section into signals so the files it
+  names are visible in the app.
+- **OpenStreetMap business scraper** (Domains, weekly Mon 08:30): runs
+  `_CLEAN_2026-11-02/osm_icp_scrape.py` for an offer (area/state/city), then imports the
+  `*_1_WITH_EMAIL_*.csv` it wrote and reports the size of the website-only and phone-only lists.
+  The scraper's own `OSM_CACHE` makes it resumable.
+- **TODAY HOT LIST** (Signals, daily 10:30): runs `_CLEAN_2026-11-02/signal_monitor.py` in `report`
+  or `daily` mode, imports the addresses from `SIGNALS/HOT_TODAY/hot_<date>.csv` and records the
+  file and its row count as a signal.
+- `engine/external.py`: locating the two folders (settings `external.studio` / `external.clean`,
+  with defaults), running a script and keeping its output tail, finding the newest file, parsing
+  the pipeline report's handoffs, and importing a CSV through the same importer the UI uses. A
+  missing folder is a named error, not a stack trace.
+
+### Verified
+
+- `daily_pipeline.py stages` lists the seven stages (nrd, fraud, radar, cases, cross, jobs off,
+  ads); `osm_icp_scrape.py --list-categories` lists the OSM categories per offer; the newest hot
+  list on disk is `hot_2026-11-14.csv` with **1,692 rows**, the same count the app's own page shows.
+
+### Tests
+
+463 (was 452): the four handoffs parsed from a real report with their row counts, a report without
+that section, the newest-file pick, the row counter, a script's output tail, a failing script
+reported rather than raised, and each job naming the folder it is missing.
+
 ## [1.29.0] - 2026-11-16
 
 An import shows its progress, and it is fast enough for the bar to matter.
