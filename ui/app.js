@@ -16,6 +16,7 @@
     llmProviders: null,
     llmPresets: [],
     social: null,
+    domains: { items: [], total: 0, page: 1, pages: 1, q: '', source: '', stats: null, sources: [] },
     busy: false
   };
 
@@ -33,7 +34,8 @@
     tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.6 13.4 12 22l-9-9 8.6-8.6a2 2 0 0 1 1.4-.6H19a2 2 0 0 1 2 2v5.2a2 2 0 0 1-.4 1.4Z"/><circle cx="16.5" cy="7.5" r="1.3"/></svg>',
     target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/></svg>',
     pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></svg>',
-    video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 10.5 5-3v9l-5-3v-3Z"/></svg>'
+    video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 10.5 5-3v9l-5-3v-3Z"/></svg>',
+    globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>'
   };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -204,6 +206,7 @@
     var html = '';
     if (state.view === 'dashboard') html = viewDashboard(d);
     else if (state.view === 'leads') html = viewLeads(d);
+    else if (state.view === 'domains') html = viewDomains(d);
     else if (state.view === 'sequences') html = viewSequences(d);
     else if (state.view === 'inbox') html = viewInbox(d);
     else if (state.view === 'automation') html = viewAutomation(d);
@@ -228,6 +231,7 @@
     if (DAILY.indexOf(state.view) >= 0) html = dailyTabs(state.view) + html;
     view.innerHTML = html;
     if (state.view === 'leads') wireLeads();
+    if (state.view === 'domains') wireDomains();
     if (state.view === 'settings') wireSettings();
     if (state.view === 'mailboxes') wireMailboxes();
     if (state.view === 'inbox') wireInbox();
@@ -474,6 +478,157 @@
       };
     });
 
+  }
+
+  // ---- domains
+  function loadDomains() {
+    var q = state.domains;
+    return call('/api/domain/list?page=' + q.page + '&per=50&q=' + encodeURIComponent(q.q) +
+                '&source=' + encodeURIComponent(q.source)).then(function (res) {
+      if (res.ok) {
+        q.items = res.domains || [];
+        q.total = res.total;
+        q.pages = res.pages;
+        q.stats = res.stats;
+        q.sources = res.sources || [];
+        var nav = $('#nav-domains');
+        if (nav) nav.textContent = num(res.stats.total);
+      }
+      if (state.view === 'domains') render();
+    });
+  }
+
+  function ccDate(stamp) {
+    var value = String(stamp || '');
+    if (value.length < 8) return '—';
+    return value.slice(0, 4) + '-' + value.slice(4, 6) + '-' + value.slice(6, 8);
+  }
+
+  function viewDomains(d) {
+    var q = state.domains;
+    var s = q.stats || {};
+    var html = pageHead('Domains', num(q.total) +
+      ' domains in the catalogue - pulled from open data, enriched with Common Crawl.',
+      '<button class="btn" data-act="domain-enrich">Check Common Crawl</button>' +
+      '<button class="btn" data-act="domain-refresh">Refresh</button>');
+
+    html += '<div class="grid cols-4" style="margin-bottom:14px">' +
+      kpi('Domains', num(s.total), 'in the catalogue', 'accent') +
+      kpi('Crawled', num(s.crawled), 'seen by Common Crawl', 'green') +
+      kpi('With MX', num(s.with_mx), 'can receive mail', '') +
+      kpi('New this week', num(s.new_week), num(s.leads) + ' domains have leads', 'amber') +
+      '</div>';
+
+    html += '<div class="card"><div class="card-head"><h2>Pull from open data</h2>' +
+      '<div class="spacer"></div><span class="small dim">streamed from Hugging Face - only new domains are stored</span></div>' +
+      '<div class="grid cols-3">' + (q.sources || []).map(function (src) {
+        return '<div class="card sv-ad-card" style="background:var(--panel-2)">' +
+          '<div class="card-head"><h3>' + h(src.label) + '</h3><div class="spacer"></div>' +
+          '<span class="badge grey">' + num(src.rows) + '</span></div>' +
+          '<div class="small dim">' + h(src.note) + '</div>' +
+          '<div class="small dim mt">' + h(src.license) + ' · <span class="mono">' +
+          h(src.dataset) + '</span></div>' +
+          '<div class="toolbar" style="margin:12px 0 0">' +
+          '<input type="number" id="pull-' + h(src.key) + '" value="2000" min="1" max="200000" style="max-width:96px">' +
+          '<button class="btn sm primary" data-act="domain-pull" data-source="' + h(src.key) + '">Pull</button>' +
+          '<a class="btn sm ghost" href="' + h(src.url) + '" target="_blank" rel="noopener">Open</a>' +
+          '</div></div>';
+      }).join('') + '</div></div>';
+
+    html += '<div class="card tight mt" style="padding:0">' +
+      '<div class="toolbar" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--line)">' +
+      '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
+      '<input type="search" id="domain-search" placeholder="Search a domain" value="' + h(q.q) + '"></div>' +
+      '<select id="domain-source" style="max-width:220px">' +
+      '<option value="">All sources</option>' +
+      (q.sources || []).map(function (src) {
+        return '<option value="' + h(src.key) + '"' + (q.source === src.key ? ' selected' : '') +
+          '>' + h(src.label) + '</option>';
+      }).join('') +
+      '<option value="commoncrawl-hf"' + (q.source === 'commoncrawl-hf' ? ' selected' : '') +
+      '>Common Crawl host index</option></select>' +
+      '</div>' +
+      (q.items.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Domain</th><th>Source</th>' +
+          '<th class="num">CC pages</th><th>Last crawl</th><th>MX</th><th class="num">Leads</th>' +
+          '<th></th></tr></thead><tbody>' + q.items.map(function (dom) {
+            return '<tr><td><div class="t-email">' + h(dom.domain) + '</div>' +
+              '<div class="t-sub">' + h(dom.name || (dom.data && dom.data.title) || '') + '</div></td>' +
+              '<td>' + (dom.source ? '<span class="badge grey">' + h(dom.source) + '</span>' : '—') + '</td>' +
+              '<td class="num">' + (dom.cc_pages ? num(dom.cc_pages) : '—') + '</td>' +
+              '<td class="small dim nowrap">' + (dom.cc_last_crawl ? ccDate(dom.cc_last_crawl) : '—') + '</td>' +
+              '<td>' + (dom.mx_status
+                ? '<span class="badge ' + (dom.mx_status === 'ok' ? 'green'
+                  : dom.mx_status === 'none' ? 'red' : 'grey') + '">' + h(dom.mx_status) + '</span>'
+                : '—') + '</td>' +
+              '<td class="num">' + (dom.leads ? num(dom.leads) : '—') + '</td>' +
+              '<td class="right nowrap">' +
+              '<button class="btn sm ghost" data-act="domain-enrich" data-domain="' + h(dom.domain) + '">Check</button>' +
+              '<button class="btn sm" data-act="domain-scrape" data-domain="' + h(dom.domain) + '">Scrape</button>' +
+              '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="empty"><div class="big">No domains yet</div><p>Pull a slice from one of the ' +
+          'sources above, or let the weekly Common Crawl job add them.</p></div>') +
+      '</div>';
+
+    html += '<div class="toolbar mt"><span class="small dim">Page ' + q.page + ' of ' + q.pages + '</span>' +
+      '<div class="spacer" style="flex:1"></div>' +
+      '<button class="btn sm" data-dpage="prev"' + (q.page <= 1 ? ' disabled' : '') + '>Previous</button>' +
+      '<button class="btn sm" data-dpage="next"' + (q.page >= q.pages ? ' disabled' : '') + '>Next</button></div>';
+    return html;
+  }
+
+  function wireDomains() {
+    var search = $('#domain-search');
+    if (search) {
+      var timer;
+      search.oninput = function () {
+        clearTimeout(timer);
+        timer = setTimeout(function () {
+          state.domains.q = search.value;
+          state.domains.page = 1;
+          loadDomains();
+        }, 260);
+      };
+    }
+    var select = $('#domain-source');
+    if (select) select.onchange = function () {
+      state.domains.source = select.value;
+      state.domains.page = 1;
+      loadDomains();
+    };
+    $$('[data-dpage]').forEach(function (button) {
+      button.onclick = function () {
+        state.domains.page += button.dataset.dpage === 'next' ? 1 : -1;
+        loadDomains();
+      };
+    });
+  }
+
+  function scrapeModal(result) {
+    var emails = result.emails || [];
+    openModal({
+      title: 'Scrape ' + (result.domain || ''),
+      subtitle: result.ok ? 'Read from the live site, robots.txt respected.'
+        : 'Could not read the site.',
+      body: (result.error ? '<div class="callout" style="border-left-color:var(--red)">' +
+          h(result.error) + '</div>' : '') +
+        (result.title ? '<div class="small"><strong>' + h(result.title) + '</strong></div>' : '') +
+        (result.description ? '<div class="small dim">' + h(result.description) + '</div>' : '') +
+        '<div class="list mt">' + (emails.length ? emails.map(function (email) {
+          return '<div class="file-row"><span class="grow mono small">' + h(email) + '</span>' +
+            '<button class="btn sm" data-act="add-scraped" data-email="' + h(email) +
+            '" data-domain="' + h(result.domain) + '">Add as lead</button></div>';
+        }).join('') : '<div class="small dim">No addresses found on the pages read.</div>') +
+        '</div>' +
+        ((result.phones || []).length ? '<div class="small dim mt">Phones: ' +
+          h(result.phones.join(', ')) + '</div>' : '') +
+        ((result.pages || []).length ? '<div class="small dim mt">Read: ' +
+          h(result.pages.join(', ')) + '</div>' : '') +
+        (result.blocked_by_robots ? '<div class="small dim mt">robots.txt disallows crawling ' +
+          'this site, so it was not read.</div>' : ''),
+      footer: '<button class="btn" data-close>Close</button>'
+    });
   }
 
   // ---- sequences
@@ -1762,6 +1917,64 @@
     },
     import: function () { importModal(); },
     'bulk-data': function () { bulkDataModal(); },
+    'domain-refresh': function () { loadDomains(); },
+    'domain-pull': function (el) {
+      var source = el.dataset.source;
+      var input = $('#pull-' + source);
+      var limit = Number(input ? input.value : 2000) || 2000;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Pulling...';
+      call('/api/domain/pull', { source: source, limit: limit }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not pull that source', 'err');
+        toast(num(r.added) + ' new domains, ' + num(r.known) + ' already known');
+        state.domains.page = 1;
+        loadDomains();
+      });
+    },
+    'domain-enrich': function (el) {
+      var body = (el && el.dataset && el.dataset.domain)
+        ? { domains: [el.dataset.domain] } : { limit: 3 };
+      if (el) el.disabled = true;
+      toast('Asking Common Crawl - it can take half a minute...');
+      call('/api/domain/enrich', body).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) return toast(r.error || 'Common Crawl is not reachable', 'err');
+        if (!r.checked) {
+          toast(r.note || ('No answer from the index' + (r.errors && r.errors.length
+            ? ': ' + r.errors[0] : '')), 'err');
+        } else {
+          toast(r.hits + ' of ' + r.checked + ' have captures' +
+            (r.errors && r.errors.length ? ' · ' + r.errors.length + ' timed out' : ''));
+        }
+        loadDomains();
+      });
+    },
+    'domain-scrape': function (el) {
+      var domain = el.dataset.domain;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Reading...';
+      call('/api/domain/scrape', { domain: domain }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not read that site', 'err');
+        scrapeModal(r);
+        loadDomains();
+      });
+    },
+    'add-scraped': function (el) {
+      call('/api/lead/save', {
+        email: el.dataset.email, domain: el.dataset.domain, source: 'crawl'
+      }).then(function (r) {
+        if (!r.ok) return toast(r.error, 'err');
+        el.disabled = true;
+        el.textContent = 'Added';
+        toast('Lead added');
+      });
+    },
     export: function () { window.location.href = '/export.csv'; },
     'export-parquet': function () { window.location.href = '/export.parquet'; },
     'export-duckdb': function () { window.location.href = '/export.duckdb'; },
@@ -3572,7 +3785,7 @@
   }
 
 
-  var VIEWS = ['dashboard', 'leads', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'mailboxes', 'settings'];
+  var VIEWS = ['dashboard', 'leads', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'mailboxes', 'settings'];
 
   function go(view) {
     if (view === 'daily') view = 'automation';
@@ -3581,6 +3794,7 @@
     SOCIAL.rendered = false;
     if (location.hash !== '#' + view) history.replaceState(null, '', '#' + view);
     if (view === 'leads') loadLeads().then(function () { render(); });
+    if (view === 'domains') loadDomains().then(function () { render(); });
     if (view === 'settings' && !state.llmProviders) loadLlm();
     render();
     paintChrome();
@@ -3602,5 +3816,6 @@
   if (VIEWS.indexOf(initial) >= 0) state.view = initial;
   refresh();
   if (state.view === 'leads') loadLeads();
+  if (state.view === 'domains') loadDomains();
   setInterval(function () { if ($('#view') && state.view === 'dashboard') refresh(); }, 30000);
 })();

@@ -15,8 +15,6 @@ FILES = (
     {"name": "rec_results.duckdb", "label": "Scraped contact table",
      "note": "25.2M rows: domain, company (biz_name), description, best_email, country. "
              "Open it in DuckDB or import a slice through Leads -> Import."},
-    {"name": "domains.txt", "label": "Domain list",
-     "note": "One domain per line - the raw list the monthly Common Crawl sweep draws from."},
 )
 
 

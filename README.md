@@ -32,12 +32,16 @@ built-in data enrichment.
   cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
   on disk — type it or press **Browse** for the system file window — streamed and capped, with an
   optional SQL filter for DuckDB.
-- **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) and the raw
-  domain list (`domains.txt`) are too big for a repository, so they are published as the public
-  dataset [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data)
-  and linked from *Leads → Bulk data*. The weekly Common Crawl job reads the CC host index from the
-  same Hub to add domains you do not have yet. Re-publish them with
-  `python tools/upload_bulk_data.py` (needs a write token).
+- **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) is too big for
+  a repository, so it is published as the public dataset
+  [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data)
+  and linked from *Leads → Bulk data*. Re-publish it with `python tools/upload_bulk_data.py`
+  (needs a write token).
+- **Domains tab** — a catalogue of domains separate from leads. Pull a slice from three open
+  datasets on Hugging Face — Common Crawl web graph (370M, ranked), registered domains (~180M),
+  daily Certificate Transparency — enrich any of them against the live Common Crawl index, or
+  scrape the site for contact details and add what it finds as a lead. The weekly Common Crawl
+  job also feeds it from the CC host index.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks

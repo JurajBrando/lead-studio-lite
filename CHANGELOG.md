@@ -1,3 +1,40 @@
+## [1.11.0] - 2026-11-15
+
+A **Domains** tab: a catalogue of domains, three open-data feeds, Common Crawl enrichment and
+direct scraping.
+
+### Added
+
+- **Domains tab**, next to Leads: the catalogue as its own thing, with a search, a source filter,
+  per-domain Common Crawl pages and last-crawl, MX, and how many leads sit on the domain.
+- **Three Hugging Face sources** (`engine/domain_sources.py`), streamed where they live and
+  never downloaded whole:
+  * `open-index/ccrawl-domains` - 370M domains from the current CC web graph, ranked by PageRank
+    and harmonic centrality (ODC-BY).
+  * `humbleworth/registered-domains` - ~180M registered domains, one per line (no licence
+    declared).
+  * `xfox25/ct-daily-domains` - one Certificate Transparency file per day, ~42M names (CC-BY-4.0).
+
+  Only the domains the catalogue does not have are inserted, so a 370M-row list costs nothing
+  until you actually use it.
+- **`/api/domain/list`, `/api/domain/pull`, `/api/domain/enrich`, `/api/domain/scrape`.**
+- **Per-domain Common Crawl check** from the table: up to three domains per click, 15 s each, a
+  timeout or a 504 reported as an error instead of hanging the page. The daily `commoncrawl`
+  job remains the way to check many.
+- **Scrape**: reads the live site (robots-aware, up to four pages), lists the addresses it finds,
+  and *Add as lead* creates the lead without leaving the page.
+
+### Changed
+
+- `domains.txt` is no longer published on Hugging Face - the catalogue is pulled from the three
+  open datasets instead. The Bulk data dialog and `tools/upload_bulk_data.py` now carry only
+  `rec_results.duckdb`.
+
+### Tests
+
+302 (was 289): the source registry, crawl/day selection, the store (de-duplication, URL to
+domain), the pull counters and the error path, and the three new endpoints.
+
 ## [1.10.3] - 2026-11-15
 
 Bulk data on Hugging Face, and Common Crawl in both directions.

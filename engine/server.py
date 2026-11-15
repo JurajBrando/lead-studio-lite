@@ -12,9 +12,10 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, demo, hf_data, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
+from .jobs import cc as cc_job
 from .jobs.base import Context, Job
 
 PIXEL = base64.b64decode(
@@ -686,6 +687,135 @@ def r_domains(q):
             "dead": db.scalar("SELECT COUNT(*) FROM domains WHERE mx_status='none'")}
 
 
+# ------------------------------------------------------------------ Domains tab
+def _domain_stats():
+    week_ago = db.now() - 7 * 86400
+    return {
+        "total": db.scalar("SELECT COUNT(*) FROM domains"),
+        "crawled": db.scalar("SELECT COUNT(*) FROM domains WHERE cc_pages>0"),
+        "with_mx": db.scalar("SELECT COUNT(*) FROM domains WHERE mx_status='ok'"),
+        "new_week": db.scalar("SELECT COUNT(*) FROM domains WHERE first_seen_ts>?", (week_ago,)),
+        "leads": db.scalar("SELECT COUNT(DISTINCT domain) FROM leads WHERE domain<>''"),
+    }
+
+
+def r_domain_list(q):
+    page = max(1, int(q.get("page") or 1))
+    per = max(10, min(200, int(q.get("per") or 50)))
+    search = (q.get("q") or "").strip()
+    source = (q.get("source") or "").strip()
+    where, args = [], []
+    if search:
+        where.append("d.domain LIKE ?")
+        args.append("%%%s%%" % search)
+    if source:
+        where.append("d.source=?")
+        args.append(source)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    total = db.scalar("SELECT COUNT(*) FROM domains d" + clause, tuple(args))
+    rows = db.rows(
+        "SELECT d.*, (SELECT COUNT(*) FROM leads l WHERE l.domain=d.domain) AS leads "
+        "FROM domains d" + clause +
+        " ORDER BY d.updated_ts DESC, d.domain LIMIT ? OFFSET ?",
+        tuple(args) + (per, (page - 1) * per))
+    for row in rows:
+        raw = row.get("data") or "{}"
+        try:
+            row["data"] = json.loads(raw)
+        except ValueError:
+            row["data"] = {}
+    return {"ok": True, "domains": rows, "total": total, "page": page,
+            "pages": max(1, (total + per - 1) // per),
+            "stats": _domain_stats(), "sources": domain_sources.describe()}
+
+
+def r_domain_pull(p):
+    source = str(p.get("source") or "").strip()
+    if not source:
+        return {"ok": False, "error": "Pick a source first."}
+    try:
+        limit = int(p.get("limit") or 5000)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "The limit must be a number."}
+    return domain_sources.pull(source, limit=limit)
+
+
+def r_domain_enrich(p):
+    """Check a few domains against the current Common Crawl index, right now.
+
+    Interactive on purpose, so it is small: the index is often slow (a 504 after half a
+    minute is normal for a big host), and the answer arrives in the page, not in a log.
+    """
+    names = [str(d).strip().lower() for d in (p.get("domains") or []) if str(d).strip()]
+    try:
+        limit = max(1, min(3, int(p.get("limit") or 3)))
+    except (TypeError, ValueError):
+        limit = 3
+    if names:
+        rows = [row for row in (db.one("SELECT * FROM domains WHERE domain=?", (name,))
+                                for name in names[:limit]) if row]
+    else:
+        rows = db.rows("SELECT * FROM domains WHERE cc_checked_ts=0 "
+                       "ORDER BY first_seen_ts DESC LIMIT ?", (limit,))
+    if not rows:
+        return {"ok": True, "checked": 0, "hits": 0, "index": "", "errors": [],
+                "note": "Nothing to check - every domain here already has a footprint."}
+    try:
+        index = cc_job.latest_index()
+    except Exception as exc:                        # noqa: BLE001 - the index may be down
+        return {"ok": False, "error": "Common Crawl index unavailable: %s" % exc}
+    checked = hits = 0
+    errors = []
+    for row in rows:
+        domain = row["domain"]
+        try:
+            body = net.text(cc_job.index_url(index, domain), timeout=15)
+        except net.NetError as exc:
+            if exc.status != 404:
+                errors.append("%s: HTTP %s" % (domain, exc.status))
+                continue
+            body = ""
+        except Exception as exc:                    # noqa: BLE001 - one bad domain only
+            errors.append("%s: %s" % (domain, exc))
+            continue
+        parsed = cc_job.parse_cc_lines(body, domain)
+        checked += 1
+        if parsed["pages"]:
+            hits += 1
+        db.execute("UPDATE domains SET cc_pages=?, cc_last_crawl=?, cc_checked_ts=?, "
+                   "updated_ts=? WHERE domain=?",
+                   (parsed["pages"], parsed["last_crawl"], db.now(), db.now(), domain))
+        time.sleep(0.3)
+    db.event("domains", "footprint checked %d domains, %d with captures" % (checked, hits))
+    return {"ok": True, "index": index, "checked": checked, "hits": hits, "errors": errors}
+
+
+def r_domain_scrape(p):
+    """Read the live site for contact details. Does not create leads on its own."""
+    domain = net.domain_of(p.get("domain") or "") or str(p.get("domain") or "").strip().lower()
+    if not domain or "." not in domain:
+        return {"ok": False, "error": "That is not a domain."}
+    try:
+        pages = max(1, min(8, int(p.get("pages") or 4)))
+    except (TypeError, ValueError):
+        pages = 4
+    result = crawl.crawl_domain(domain, max_pages=pages)
+    if result.get("ok"):
+        row = db.one("SELECT data FROM domains WHERE domain=?", (domain,))
+        payload = {}
+        try:
+            payload = json.loads((row or {}).get("data") or "{}")
+        except ValueError:
+            payload = {}
+        payload.update({"title": result["title"][:200], "description": result["description"][:300],
+                        "scraped_ts": db.now(), "emails_found": len(result["emails"])})
+        db.execute("UPDATE domains SET data=?, name=COALESCE(NULLIF(name,''), ?), updated_ts=? "
+                   "WHERE domain=?", (json.dumps(payload, default=str),
+                                      (result["title"] or "")[:120], db.now(), domain))
+        db.event("domains", "scraped %s: %d emails" % (domain, len(result["emails"])))
+    return result
+
+
 def r_brands(q=None):
     rows = brands.list_brands()
     return {"ok": True, "brands": rows,
@@ -1094,6 +1224,7 @@ ROUTES_GET = {
     "/api/jobs/runs": r_job_runs,
     "/api/signals": r_signals,
     "/api/domains": r_domains,
+    "/api/domain/list": r_domain_list,
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
@@ -1116,6 +1247,9 @@ ROUTES_POST = {
     "/api/lead/import/path": r_lead_import_path,
     "/api/lead/inspect": r_lead_inspect,
     "/api/dialog/pick": r_pick_file,
+    "/api/domain/pull": r_domain_pull,
+    "/api/domain/enrich": r_domain_enrich,
+    "/api/domain/scrape": r_domain_scrape,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,
     "/api/sequence/delete": r_seq_delete,
