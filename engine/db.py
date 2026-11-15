@@ -47,9 +47,11 @@ LEADS_DDL = "CREATE TABLE IF NOT EXISTS %s (\n%s\n);" % (
     "leads", ",\n".join("    %s %s" % (name, ddl) for name, ddl in LEAD_COLUMNS))
 LEADS_INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email ON leads(email) WHERE email <> '';
+CREATE INDEX IF NOT EXISTS idx_leads_email_lookup ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 CREATE INDEX IF NOT EXISTS idx_leads_domain ON leads(domain);
 CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_leads_company_blank ON leads(company COLLATE NOCASE) WHERE email = '';
 """
 
 SCHEMA = """
@@ -336,8 +338,32 @@ def init_db():
     c = conn()
     c.executescript(SCHEMA)
     _migrate(c)
+    _ensure_leads_indexes(c)
     c.commit()
     return c
+
+
+def _ensure_leads_indexes(c):
+    """Make sure the leads indexes are on `leads`, not left behind on a rebuilt table.
+
+    `CREATE INDEX IF NOT EXISTS` only checks the *name*: after `_rebuild_leads` renamed tables,
+    an index with the same name could sit on another table, so every `WHERE email=?` scanned the
+    whole table and an import crawled.
+    """
+    try:
+        orphans = c.execute("SELECT name FROM sqlite_master WHERE type='index' "
+                            "AND tbl_name<>'leads' AND name LIKE 'idx_leads_%'").fetchall()
+    except sqlite3.Error:
+        orphans = []
+    for row in orphans:
+        try:
+            c.execute('DROP INDEX IF EXISTS "%s"' % str(row[0]).replace('"', '""'))
+        except sqlite3.Error:
+            pass
+    try:
+        c.executescript(LEADS_INDEXES)
+    except sqlite3.Error:
+        pass
 
 
 def _leads_shape(c):

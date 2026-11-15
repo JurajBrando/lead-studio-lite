@@ -474,7 +474,7 @@ def _safe_where(where):
     return text
 
 
-def iter_source_rows(path, table="", where="", limit=0):
+def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
     """(headers, generator of row dicts). Streams parquet and DuckDB, never loads it all."""
     full, kind = _check_path(path)
     where = _safe_where(where)
@@ -486,6 +486,7 @@ def iter_source_rows(path, table="", where="", limit=0):
         import pyarrow.parquet as pq  # type: ignore
         handle = pq.ParquetFile(full)
         headers = [f.name for f in handle.schema_arrow]
+        total_rows = int(handle.metadata.num_rows or 0)
 
         def parquet_rows():
             seen = 0
@@ -495,6 +496,8 @@ def iter_source_rows(path, table="", where="", limit=0):
                     seen += 1
                     if limit and seen >= limit:
                         return
+                if report:
+                    report(min(seen, total_rows or seen), total_rows, "reading the file", seen)
         return headers, parquet_rows()
 
     if kind in ("duckdb", "sqlite"):
@@ -522,6 +525,7 @@ def iter_source_rows(path, table="", where="", limit=0):
 
         def db_rows():
             try:
+                seen = 0
                 while True:
                     batch = cursor.fetchmany(2000)
                     if not batch:
@@ -531,34 +535,46 @@ def iter_source_rows(path, table="", where="", limit=0):
                             yield {h: _cell(v) for h, v in zip(headers, record)}
                         else:
                             yield {h: _cell(record[h]) for h in headers}
+                        seen += 1
+                    if report:
+                        report(seen, 0, "reading the file", seen)
             finally:
                 con.close()
         return headers, db_rows()
 
     # csv / excel: read the file whole, so cap the size
-    size = os.path.getsize(full)
+    size = os.path.getsize(full) or size
     if size > 200 * 1048576:
         raise ValueError("That file is over 200 MB. Import a slice: use a DuckDB file with a "
                          "filter, or split the CSV.")
     with open(full, "rb") as fh:
         raw = fh.read()
+    if report:
+        report(size, size, "parsing", 0)
     headers, rows = read_rows(os.path.basename(full), raw)
     if limit:
         rows = rows[:int(limit)]
+    if report:
+        report(len(rows), len(rows), "parsed", len(rows))
     return headers, rows
 
 
 def import_path(path, table="", where="", limit=20000, source="", update_existing=False,
-                mark_status="new", only_email=False):
+                mark_status="new", only_email=False, report=None):
     """Import rows from a file on this computer, streaming and capped."""
     try:
         full, kind = _check_path(path)
-        headers, rows = iter_source_rows(full, table=table, where=where, limit=limit)
+        size = os.path.getsize(full) if os.path.exists(full) else 0
+        if report:
+            report(0, size, "reading the file")
+        headers, rows = iter_source_rows(full, table=table, where=where, limit=limit,
+                                         report=report, size=size)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+    total = len(rows) if hasattr(rows, "__len__") else 0
     summary = import_rows(os.path.basename(full), headers, rows, source=source or "import",
                           update_existing=update_existing, mark_status=mark_status,
-                          limit=limit, only_email=only_email)
+                          limit=limit, only_email=only_email, report=report, total=total)
     summary["path"] = full
     summary["kind"] = kind
     if table:
@@ -595,7 +611,13 @@ def identity_key(email, data):
 
 
 def _find_existing(email, data):
-    """The row this import would duplicate, if any. An address wins over a company match."""
+    """The row this import would duplicate, if any. An address wins over a company match.
+
+    The company comparisons are written as `company = ? COLLATE NOCASE` (not `lower(company)=`)
+    so SQLite can use `idx_leads_company` / `idx_leads_company_blank`. With the function-wrapped
+    form every row without a matching email scanned the whole table, which is what made a
+    sixty-thousand-row file take minutes.
+    """
     if email:
         row = db.one("SELECT * FROM leads WHERE email=?", (email,))
         if row:
@@ -603,24 +625,25 @@ def _find_existing(email, data):
     company = (data.get("company") or "").strip()
     domain = (data.get("domain") or "").strip()
     if company and domain:
-        row = db.one("SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+        row = db.one("SELECT * FROM leads INDEXED BY idx_leads_company_blank WHERE email='' AND company = ? COLLATE NOCASE "
                      "AND lower(coalesce(domain,''))=lower(?) LIMIT 1", (company, domain))
         if row:
             return row
     name = _full_name(data)
     if name and company:
         return db.one(
-            "SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+            "SELECT * FROM leads INDEXED BY idx_leads_company_blank WHERE email='' AND company = ? COLLATE NOCASE "
             "AND lower(trim(coalesce(first_name,'')||' '||coalesce(last_name,'')))=lower(?) LIMIT 1",
             (company, name))
     if company:
-        return db.one("SELECT * FROM leads WHERE email='' AND lower(company)=lower(?) "
+        return db.one("SELECT * FROM leads INDEXED BY idx_leads_company_blank WHERE email='' AND company = ? COLLATE NOCASE "
                       "AND lower(coalesce(domain,''))='' LIMIT 1", (company,))
     return None
 
 
 def import_rows(name, headers, rows, source="import", update_existing=False,
-                mark_status="new", limit=0, only_email=False, mapping=None):
+                mark_status="new", limit=0, only_email=False, mapping=None, report=None,
+                total=0):
     """The import loop. `rows` is any iterable of dicts keyed by header name."""
     headers = list(headers or [])
     if not headers:
@@ -652,6 +675,9 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
             summary["stopped_at_limit"] = True
             break
         summary["examined"] += 1
+        if report and summary["examined"] % 500 == 0:
+            report(summary["examined"], total, "importing",
+                   summary["imported"] + summary["updated"])
 
         email = clean_email(row.get(headers[mapping["email"]])) if "email" in mapping else ""
         if email and not mail.valid_email(email):
@@ -725,6 +751,9 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
             flush()
     flush()
 
+    if report:
+        report(total or summary["examined"], total or summary["examined"], "finishing",
+               summary["imported"] + summary["updated"])
     db.event("import", "%s: +%d new (%d without an email), %d existing, %d invalid" % (
         name, summary["imported"], summary["no_email"], summary["existing_email"],
         summary["invalid"]))
@@ -732,13 +761,23 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
 
 
 def import_data(name, raw, source="import", update_existing=False, mark_status="new",
-                only_email=False):
-    """Import an uploaded file. Returns a summary dict."""
+                only_email=False, report=None):
+    """Import an uploaded file. Returns a summary dict.
+
+    `report(done, total, phase, rows)` is called while it works, so the UI can draw a bar with
+    an estimate instead of a spinner.
+    """
+    size = len(raw or b"")
+    if report:
+        report(0, size, "reading the file")
     headers, raw_rows = read_rows(name, raw)
+    if report:
+        report(size, size, "parsed", 0)
     if not raw_rows:
         return {"ok": False, "error": "No data rows found in that file.", "headers": headers}
     return import_rows(name, headers, raw_rows, source=source, update_existing=update_existing,
-                       mark_status=mark_status, only_email=only_email)
+                       mark_status=mark_status, only_email=only_email, report=report,
+                       total=len(raw_rows) if hasattr(raw_rows, "__len__") else 0)
 
 
 EXPORT_COLS = ["email", "first_name", "last_name", "company", "title", "domain", "description",

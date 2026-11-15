@@ -1,3 +1,43 @@
+## [1.29.0] - 2026-11-16
+
+An import shows its progress, and it is fast enough for the bar to matter.
+
+### Added
+
+- **A progress bar on both imports** — the uploaded file and the file on disk. The import runs in
+  a background thread, `POST /api/lead/import` and `/api/lead/import/path` return an `import_id`,
+  and the modal polls `/api/import/progress` every half second: phase, percent, rows so far,
+  done/total, rows a second, and **time left**. Finished runs return the summary, so the bar ends
+  on the result instead of a spinner.
+- `engine/progress.py`: an in-memory registry (no writes per tick), with percent, rate and an
+  estimate rounded up so a nearly finished run shows a second rather than zero.
+- `report(done, total, phase, rows)` callbacks through `import_data`, `import_path`,
+  `iter_source_rows` and `import_rows`; a streamed Parquet file reports its batch progress against
+  the real row count from the file metadata.
+
+### Fixed
+
+- **The import was scanning the whole table for every row.** Two index problems, both now fixed:
+  - `idx_leads_email` is a *partial* unique index (`WHERE email <> ''`), and SQLite cannot use it
+    for `WHERE email=?` because a parameter does not imply the predicate. A new
+    `idx_leads_email_lookup` covers plain lookups: **56 ms → 0.1 ms per row** on 123k leads.
+  - after `_rebuild_leads` the `idx_leads_*` indexes could be left on the renamed-away table, so
+    `CREATE INDEX IF NOT EXISTS` skipped them for `leads` entirely. `init_db()` now drops those
+    orphans and rebuilds them on the right table.
+  - the company lookups take `INDEXED BY idx_leads_company_blank`, since otherwise the planner
+    picked the email index for `email='' AND company=?`.
+
+### Measured
+
+- 2,000 rows: 125 s → **0.3 s**.
+- 60,000 rows through the API: **~4,500 rows a second**, the bar stepping 42% → 100% with a 9 s
+  estimate at the start, ending `done 100%` and `imported 60000`.
+
+### Tests
+
+452 (was 446): percent/rate/estimate, a finished run carrying its result, a failure reported,
+an unknown id, a late update ignored, and a run with no known total.
+
 ## [1.28.0] - 2026-11-15
 
 The official Common Crawl index in the Hugging Face bucket is now the default.

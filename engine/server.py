@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, progress, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -518,6 +518,35 @@ def r_lead_status(p):
     return {"ok": True, "updated": len(ids)}
 
 
+def _import_run(label, work):
+    """Run an import in a thread and hand back the id the browser polls."""
+    run_id = progress.start(label)
+
+    def reporter(done, total, phase, rows=0):
+        progress.update(run_id, done, total, phase, rows)
+
+    def worker():
+        try:
+            result = work(reporter)
+        except Exception as exc:                   # noqa: BLE001 - reported to the UI
+            config.log("import failed: %s\n%s" % (exc, traceback.format_exc()))
+            progress.finish(run_id, error=str(exc))
+            return
+        try:
+            if result.get("ok"):
+                result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
+        except Exception as exc:                   # noqa: BLE001
+            config.log("domain sync after import failed: %s" % exc)
+        progress.finish(run_id, result=result)
+
+    threading.Thread(target=worker, name="import", daemon=True).start()
+    return run_id
+
+
+def r_import_progress(q):
+    return progress.snapshot(q.get("id") or "")
+
+
 def r_lead_import(p):
     name = p.get("name") or "upload.csv"
     text = p.get("text")
@@ -528,19 +557,12 @@ def r_lead_import(p):
         raw = text.encode("utf-8")
     else:
         return {"ok": False, "error": "No file received."}
-    try:
-        result = importer.import_data(name, raw, source="import",
-                                      update_existing=bool(p.get("update_existing")),
-                                      mark_status=p.get("status") or "new",
-                                      only_email=bool(p.get("only_email")))
-        if result.get("ok"):
-            result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
-        return result
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    except Exception as e:
-        config.log("import failed: %s\n%s" % (e, traceback.format_exc()))
-        return {"ok": False, "error": "Could not read that file: %s" % e}
+    options = {"update_existing": bool(p.get("update_existing")),
+               "mark_status": p.get("status") or "new",
+               "only_email": bool(p.get("only_email"))}
+    run_id = _import_run(name, lambda report: importer.import_data(name, raw, source="import",
+                                                                  report=report, **options))
+    return {"ok": True, "async": True, "import_id": run_id, "name": name}
 
 
 def r_pick_file(p):
@@ -564,19 +586,14 @@ def r_lead_import_path(p):
     except (TypeError, ValueError):
         return {"ok": False, "error": "The row limit must be a number."}
     limit = max(1, min(limit, 500000))
-    try:
-        result = importer.import_path(
-            p.get("path") or "", table=str(p.get("table") or ""), where=str(p.get("where") or ""),
-            limit=limit, update_existing=bool(p.get("update_existing")),
-            mark_status=p.get("status") or "new", only_email=bool(p.get("only_email")))
-        if result.get("ok"):
-            result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
-        return result
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    except Exception as e:
-        config.log("path import failed: %s\n%s" % (e, traceback.format_exc()))
-        return {"ok": False, "error": "Could not import that file: %s" % e}
+    options = {"table": str(p.get("table") or ""), "where": str(p.get("where") or ""),
+               "limit": limit, "update_existing": bool(p.get("update_existing")),
+               "mark_status": p.get("status") or "new",
+               "only_email": bool(p.get("only_email"))}
+    name = os.path.basename(str(p.get("path") or "")) or "file"
+    run_id = _import_run(name, lambda report: importer.import_path(
+        p.get("path") or "", report=report, **options))
+    return {"ok": True, "async": True, "import_id": run_id, "name": name}
 
 
 def r_lead_verify(p):
@@ -1553,6 +1570,7 @@ ROUTES_POST = {
     "/api/lead/status": r_lead_status,
     "/api/lead/import": r_lead_import,
     "/api/lead/import/path": r_lead_import_path,
+    "/api/import/progress": r_import_progress,
     "/api/lead/inspect": r_lead_inspect,
     "/api/dialog/pick": r_pick_file,
     "/api/domain/pull": r_domain_pull,

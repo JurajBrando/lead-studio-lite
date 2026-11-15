@@ -9,7 +9,7 @@ import secrets
 import sys
 import time
 
-VERSION = "1.28.0"
+VERSION = "1.29.0"
 APP_NAME = "Lead Studio Lite"
 
 FROZEN = bool(getattr(sys, "frozen", False))

@@ -57,6 +57,16 @@
     if (!d) return '—';
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
+  function fmtEta(seconds) {
+    seconds = Math.max(0, Math.round(seconds || 0));
+    if (seconds < 60) return seconds + 's';
+    var minutes = Math.floor(seconds / 60);
+    var rest = seconds % 60;
+    if (minutes < 60) return minutes + 'm' + (rest ? ' ' + rest + 's' : '');
+    var hours = Math.floor(minutes / 60);
+    return hours + 'h ' + (minutes % 60) + 'm';
+  }
+
   function fmtWhen(v) {
     var d = ts(v);
     if (!d) return '—';
@@ -3367,15 +3377,11 @@
             }
             b64 = btoa(b64);
             fill.style.width = '70%';
-            call('/api/lead/import', {
+            startImport({
               name: file.name, b64: b64,
               update_existing: $('#imp-update', root).checked,
               only_email: $('#imp-only-email', root).checked
-            }).then(function (r) {
-              fill.style.width = '100%';
-              $('#imp-result', root).innerHTML = impCallout(r);
-              if (r.ok) { toast(r.imported + ' contacts imported'); refresh(); loadLeads(); }
-            });
+            }, root);
           };
           reader.readAsArrayBuffer(file);
         }
@@ -3448,8 +3454,6 @@
         function run() {
           var path = $('#imp-path-input', root).value.trim();
           if (!path) return toast('Paste the path to a file first', 'err');
-          var box = $('#imp-result', root);
-          box.innerHTML = '<div class="small dim">Importing - a big file can take a minute...</div>';
           var body = {
             path: path,
             limit: Number($('#imp-limit', root).value) || 5000,
@@ -3459,10 +3463,66 @@
           };
           var select = $('#imp-table', root);
           if (select) body.table = select.value;
-          call('/api/lead/import/path', body).then(function (r) {
-            box.innerHTML = impCallout(r);
-            if (r.ok) { toast(r.imported + ' contacts imported'); refresh(); loadLeads(); }
+          startImport(body, root);
+        }
+
+        function startImport(body, scope) {
+          var box = $('#imp-result', scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
+          if (bar) bar.classList.remove('hidden');
+          if (fill) fill.style.width = '2%';
+          if (box) box.innerHTML = '<div class="small dim">Starting the import...</div>';
+          call('/api/lead/import' + (body.path ? '/path' : ''), body).then(function (r) {
+            if (!r.ok || !r.import_id) {
+              if (box) {
+                box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+                  h(r.error || 'The import did not start') + '</div>';
+              }
+              return;
+            }
+            watchImport(r.import_id, scope);
           });
+        }
+
+        function watchImport(importId, scope) {
+          var box = $('#imp-result', scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
+          if (bar) bar.classList.remove('hidden');
+          var timer = setInterval(function () {
+            call('/api/import/progress', { id: importId }).then(function (r) {
+              if (!r.ok) {
+                clearInterval(timer);
+                if (box) box.innerHTML = '<div class="callout">' + h(r.error) + '</div>';
+                return;
+              }
+              var percent = r.percent || 0;
+              if (fill) fill.style.width = Math.max(2, percent) + '%';
+              if (r.finished) {
+                clearInterval(timer);
+                if (fill) fill.style.width = '100%';
+                if (r.error) {
+                  box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+                    h(r.error) + '</div>';
+                  return;
+                }
+                var result = r.result || {};
+                box.innerHTML = impCallout(result);
+                if (result.ok) {
+                  toast(num(result.imported || 0) + ' contacts imported');
+                  refresh();
+                  loadLeads();
+                }
+                return;
+              }
+              var parts = [r.phase || 'working'];
+              if (percent) parts.push(percent + '%');
+              if (r.rows) parts.push(num(r.rows) + ' rows');
+              if (r.total > 1) {
+                parts.push(num(Math.round(r.done)) + ' / ' + num(Math.round(r.total)));
+              }
+              if (r.eta > 0) parts.push(fmtEta(r.eta) + ' left');
+              else if (r.rate) parts.push(num(Math.round(r.rate)) + ' a second');
+              if (box) box.innerHTML = '<div class="small dim">' + h(parts.join(' · ')) + '</div>';
+            });
+          }, 500);
         }
       }
     });
