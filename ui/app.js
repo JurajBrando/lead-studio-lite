@@ -1352,6 +1352,139 @@
     });
   }
 
+  // ---- MCP connections (another server the app calls, not the app as a server)
+  function mcpCard(d) {
+    var list = d.mcp || [];
+    return '<div class="card mt" id="mcp-card"><div class="card-head"><h2>MCP connections</h2>' +
+      '<div class="spacer"></div><span class="small dim">remote MCP servers this app calls</span></div>' +
+      '<div class="small muted" style="margin-bottom:10px">Manyreach runs over its own MCP server ' +
+      '(Streamable HTTP + OAuth). Connecting opens the browser once; the tokens stay in ' +
+      '<span class="mono">data/settings.json</span> on this computer and never in the repository.</div>' +
+      (list.length ? '<div class="list">' + list.map(function (c) {
+        return '<div class="list-item"><div class="avatar">' +
+          h((c.label || c.name).slice(0, 2).toUpperCase()) + '</div>' +
+          '<div class="grow"><div><strong>' + h(c.label) + '</strong> ' +
+          (c.connected ? '<span class="badge green">connected</span>'
+            : '<span class="badge grey">not connected</span>') +
+          (c.expired ? ' <span class="badge amber">expired</span>' : '') + '</div>' +
+          '<div class="t-sub">' + h(c.note) + '</div>' +
+          '<div class="t-sub mono">' + h(c.url) + '</div></div>' +
+          '<div class="nowrap">' +
+          (c.connected
+            ? '<button class="btn sm" data-mcp-tools="' + h(c.name) + '">Tools</button> ' +
+              '<button class="btn sm danger" data-mcp-off="' + h(c.name) + '">Disconnect</button>'
+            : '<button class="btn sm primary" data-mcp-on="' + h(c.name) + '">Connect</button>') +
+          '</div></div>';
+      }).join('') + '</div>' : '<div class="small dim">No MCP connection defined.</div>') +
+      '<div id="mcp-out" class="mt"></div></div>';
+  }
+
+  function renderMcpTools(name, tools) {
+    var box = $('#mcp-out');
+    if (!box) return;
+    if (!tools || !tools.length) {
+      box.innerHTML = '<div class="small dim">That server exposes no tools.</div>';
+      return;
+    }
+    box.innerHTML = '<div class="card" style="background:var(--panel-2)">' +
+      '<div class="card-head"><h3>' + h(name) + ' tools</h3><div class="spacer"></div>' +
+      '<span class="badge grey">' + tools.length + '</span></div>' +
+      '<div class="field"><label>Tool</label><select id="mcp-tool">' + tools.map(function (tool) {
+        return '<option value="' + h(tool.name) + '">' + h(tool.name) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="hint small dim" id="mcp-tool-desc">' +
+      h(tools[0].description || '') + '</div>' +
+      '<div class="field"><label>Arguments <span class="dim">(JSON)</span></label>' +
+      '<textarea id="mcp-args" rows="3"></textarea></div>' +
+      '<button class="btn primary" id="mcp-run">Run</button>' +
+      '<div id="mcp-answer" class="mt"></div></div>';
+
+    var select = $('#mcp-tool');
+    var args = $('#mcp-args');
+    var describe = function () {
+      var tool = tools.filter(function (x) { return x.name === select.value; })[0] || tools[0];
+      $('#mcp-tool-desc').textContent = tool.description || '';
+      var skeleton = {};
+      Object.keys((tool.schema && tool.schema.properties) || {}).forEach(function (key) {
+        var type = (tool.schema.properties[key] || {}).type;
+        skeleton[key] = type === 'number' || type === 'integer' ? 0
+          : (type === 'array' ? [] : '');
+      });
+      args.value = JSON.stringify(skeleton, null, 1);
+    };
+    select.onchange = describe;
+    describe();
+
+    $('#mcp-run').onclick = function () {
+      var answer = $('#mcp-answer');
+      answer.innerHTML = '<div class="small dim">Calling...</div>';
+      call('/api/mcp/call', { name: name, tool: select.value, arguments: args.value })
+        .then(function (r) {
+          if (!r.ok) {
+            answer.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+              h(r.error || 'The tool failed') + '</div>';
+            return;
+          }
+          answer.innerHTML = '<pre class="log">' +
+            h(r.text || JSON.stringify(r.result, null, 1)) + '</pre>';
+        });
+    };
+  }
+
+  function wireMcp() {
+    $$('[data-mcp-on]').forEach(function (button) {
+      button.onclick = function () {
+        var name = button.dataset.mcpOn;
+        button.disabled = true;
+        call('/api/mcp/start', { name: name }).then(function (r) {
+          button.disabled = false;
+          if (!r.ok) return toast(r.error || 'Could not start the sign-in', 'err');
+          window.open(r.url, '_blank');
+          toast('Approve the sign-in in the browser tab');
+          var tries = 0;
+          var timer = setInterval(function () {
+            tries += 1;
+            if (tries > 24) { clearInterval(timer); return; }
+            call('/api/mcp/status', {}).then(function (state_res) {
+              var row = (state_res.connections || []).filter(function (c) {
+                return c.name === name;
+              })[0];
+              if (state_res.ok && row && row.connected) {
+                clearInterval(timer);
+                toast('Connected', 'ok');
+                refresh();
+              }
+            });
+          }, 5000);
+        });
+      };
+    });
+    $$('[data-mcp-off]').forEach(function (button) {
+      button.onclick = function () {
+        call('/api/mcp/disconnect', { name: button.dataset.mcpOff }).then(function (r) {
+          if (!r.ok) return toast(r.error, 'err');
+          toast('Disconnected');
+          refresh();
+        });
+      };
+    });
+    $$('[data-mcp-tools]').forEach(function (button) {
+      button.onclick = function () {
+        var name = button.dataset.mcpTools;
+        var box = $('#mcp-out');
+        if (box) box.innerHTML = '<div class="small dim">Asking ' + h(name) + '...</div>';
+        call('/api/mcp/tools', { name: name }).then(function (r) {
+          if (!r.ok) {
+            if (box) box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+              h(r.error) + '</div>';
+            return;
+          }
+          renderMcpTools(name, r.tools || []);
+        });
+      };
+    });
+  }
+
   function loadLlm() {
     return call('/api/llm/providers').then(function (res) {
       if (!res.ok) return;
@@ -1806,6 +1939,8 @@
 
     html += llmCard(d);
 
+    html += mcpCard(d);
+
     html += '<div class="card mt"><div class="card-head"><h2>Connectors (optional)</h2>' +
       '<div class="spacer"></div>' +
       ['hunter', 'ai', 'serper'].map(function (k) {
@@ -1867,6 +2002,7 @@
 
   function wireSettings() {
     wireLlm();
+    wireMcp();
   }
 
   // ------------------------------------------------------------------ actions

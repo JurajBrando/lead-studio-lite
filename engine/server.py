@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -102,6 +102,7 @@ def r_state():
                 "offers": db.scalar("SELECT COUNT(*) FROM offers"),
                 "offers_active": db.scalar("SELECT COUNT(*) FROM offers WHERE active=1")},
             "llm": llm.status(),
+            "mcp": mcp_client.status_all(),
             "oauth": oauth.status()}
 
 
@@ -202,6 +203,51 @@ def r_leads(q=""):
 LEAD_FIELDS = ("email", "first_name", "last_name", "company", "title", "domain", "description",
                "phone", "city", "country", "industry", "company_size", "technologies",
                "linkedin", "website", "notes", "tags", "source", "status")
+
+
+def r_mcp_status(q=None):
+    return {"ok": True, "connections": mcp_client.status_all()}
+
+
+def r_mcp_start(p):
+    try:
+        answer = mcp_client.begin(str(p.get("name") or ""), PORT)
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **answer}
+
+
+def r_mcp_tools(p):
+    try:
+        items = mcp_client.tools(str(p.get("name") or ""))
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "tools": items}
+
+
+def r_mcp_call(p):
+    arguments = p.get("arguments") or {}
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except ValueError:
+            return {"ok": False, "error": "Those arguments are not valid JSON."}
+    if not isinstance(arguments, dict):
+        return {"ok": False, "error": "The arguments must be a JSON object."}
+    tool = str(p.get("tool") or "").strip()
+    if not tool:
+        return {"ok": False, "error": "Pick a tool first."}
+    try:
+        return mcp_client.call(str(p.get("name") or ""), tool, arguments)
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_mcp_disconnect(p):
+    try:
+        return mcp_client.disconnect(str(p.get("name") or ""))
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def r_lead_save(p):
@@ -1314,6 +1360,7 @@ ROUTES_GET = {
     "/api/signals": r_signals,
     "/api/domains": r_domains,
     "/api/domain/list": r_domain_list,
+    "/api/mcp/status": r_mcp_status,
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
@@ -1340,6 +1387,10 @@ ROUTES_POST = {
     "/api/domain/sync": r_domain_sync,
     "/api/domain/enrich": r_domain_enrich,
     "/api/domain/scrape": r_domain_scrape,
+    "/api/mcp/start": r_mcp_start,
+    "/api/mcp/tools": r_mcp_tools,
+    "/api/mcp/call": r_mcp_call,
+    "/api/mcp/disconnect": r_mcp_disconnect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,
     "/api/sequence/delete": r_seq_delete,
@@ -1579,6 +1630,22 @@ class Handler(BaseHTTPRequestHandler):
                 "Connected" if ok else "Connection failed",
                 "Metricool is connected. You can close this tab and go back to Lead Studio."
                 if ok else str(result.get("error") or "Metricool did not accept the sign-in."),
+                ok)
+            return self._text(page, 200, "text/html; charset=utf-8", PAGE_HEADERS)
+
+        if path.startswith("/oauth/mcp/"):
+            parts = path.strip("/").split("/")          # oauth / mcp / <name> / callback
+            name = parts[2] if len(parts) >= 3 else ""
+            try:
+                result = mcp_client.finish(name, query)
+            except mcp_client.McpError as exc:
+                result = {"ok": False, "error": str(exc)}
+            ok = bool(result.get("ok"))
+            label = (mcp_client.CONNECTIONS.get(name) or {}).get("label") or name.title()
+            page = _oauth_page(
+                "Connected" if ok else "Connection failed",
+                "%s is connected. You can close this tab and go back to Lead Studio." % label
+                if ok else str(result.get("error") or "The sign-in was refused."),
                 ok)
             return self._text(page, 200, "text/html; charset=utf-8", PAGE_HEADERS)
 

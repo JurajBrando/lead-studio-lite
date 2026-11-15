@@ -1,3 +1,32 @@
+## [1.14.0] - 2026-11-15
+
+The app as an MCP **client**: a connection to Manyreach, and a generic way to add the next one.
+
+### Added
+
+- **Settings → MCP connections.** A remote MCP server is a name, a URL and the OAuth details
+  discovered from it; `engine/mcp_client.py` walks `/.well-known/oauth-protected-resource`, then
+  the authorization server's metadata, registers the app with dynamic client registration (public
+  client, PKCE S256, loopback redirect), and stores the tokens in `data/settings.json`.
+- **Manyreach** (`https://mcp.manyreach.com/mcp`) is the first connection. *Connect* opens its
+  authorization page — the Manyreach API key is typed there, never in the app or the chat — and the
+  loopback callback finishes the flow.
+- **Tools and a runner**: *Tools* lists what the server exposes with each argument schema
+  pre-filled as a JSON skeleton; *Run* sends `tools/call` and prints the raw answer, so a tool the
+  app does not wrap is still reachable.
+- `GET /api/mcp/status`, `POST /api/mcp/start`, `/api/mcp/tools`, `/api/mcp/call`,
+  `/api/mcp/disconnect`, and `GET /oauth/mcp/<name>/callback`.
+
+### Changed
+
+- `/api/state` now reports the MCP connections, so the Settings card needs no extra request.
+
+### Tests
+
+345 (was 332): discovery through the protected-resource document, dynamic registration and the
+PKCE URL, the token exchange, a stale state, refresh, disconnect, JSON and SSE answers, and a tool
+call that returns text and one that returns an error.
+
 ## [1.13.1] - 2026-11-15
 
 Ollama Cloud stopped being free on 9 November 2026 (free accounts moved to pay-as-you-go
