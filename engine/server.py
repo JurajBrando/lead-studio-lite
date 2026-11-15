@@ -105,9 +105,27 @@ def r_state():
             status = "paused"
         else:
             status = "finished"
+        # A campaign imported from a sending platform carries its own numbers; those win over
+        # the local counters, which know only what this app has sent.
+        stats = {}
+        try:
+            stats = json.loads(sq.get("stats_json") or "{}") or {}
+        except ValueError:
+            stats = {}
+        if stats.get("source"):
+            for key in ("prospects", "reached", "opened", "clicked", "replied",
+                        "interested", "won", "senders"):
+                if key in stats:
+                    metrics[key] = int(stats.get(key) or 0)
+            status = str(stats.get("status") or status).lower()
+            if status not in ("draft", "running", "paused", "finished"):
+                status = "running" if status == "active" else "draft"
         seqs.append({**sq, "steps": steps, "enrolled": metrics["prospects"],
                      "sent": metrics["reached"], "metrics": metrics,
-                     "status": status, "created_ts": int(sq.get("created_ts") or 0)})
+                     "status": status, "created_ts": int(sq.get("created_ts") or 0),
+                     "source": stats.get("source") or "",
+                     "external_id": stats.get("external_id") or "",
+                     "stats_at": int(stats.get("synced_ts") or 0)})
     with WORKER_LOCK:
         worker = dict(WORKER)
     return {"ok": True, "settings": public, "stats": pipeline.stats(), "mailboxes": mailboxes,

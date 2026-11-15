@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 if not os.environ.get("LS_DATA"):
     os.environ["LS_DATA"] = tempfile.mkdtemp(prefix="ls_import_into_")
@@ -103,6 +104,70 @@ class ImportIntoAppTests(unittest.TestCase):
         manyreach_api.import_into_app()
         box = db.one("SELECT * FROM mailboxes WHERE from_email=?", ("s1" + DOM,))
         self.assertEqual(box["smtp_host"], "mine.test")
+
+
+class CampaignStatsTests(unittest.TestCase):
+    """The campaign's own numbers, as the sending platform reports them."""
+
+    def setUp(self):
+        db.init_db()
+        self.clean()
+        db.insert("mcp_items", {
+            "connection": "manyreach", "kind": "campaigns", "item_id": "c9",
+            "name": "With stats", "status": "Running",
+            "payload": json.dumps({
+                "campaignId": 127134, "name": "With stats", "subject": "s", "body": "<p>b</p>",
+                "status": "Running", "createdAt": "2026-11-11T17:18:42.527Z",
+                "prospectCount": 2595, "sentCount": 159, "replyCount": 2,
+                "interestedCount": 1, "conversionCount": 1,
+                "fromEmails": "a@x.com,b@x.com,c@x.com"})})
+
+    def tearDown(self):
+        self.clean()
+
+    def clean(self):
+        db.execute("DELETE FROM mcp_items WHERE connection='manyreach'")
+        ids = [row["id"] for row in db.rows("SELECT id FROM sequences WHERE name LIKE '[MR] %'")]
+        for sequence_id in ids:
+            db.execute("DELETE FROM steps WHERE sequence_id=?", (sequence_id,))
+            db.execute("DELETE FROM sequences WHERE id=?", (sequence_id,))
+
+    def test_the_campaign_numbers_land_on_the_sequence(self):
+        # No series lookup: sentCount is set and opens are zero, so it does try; patch it out.
+        with mock.patch.object(manyreach_api, "campaign_totals",
+                               return_value={"ok": True, "opened": 9, "clicked": 0, "replied": 2}):
+            answer = manyreach_api.import_into_app()
+        self.assertTrue(answer["ok"], answer)
+        sequence = db.one("SELECT * FROM sequences WHERE name=?", ("[MR] With stats",))
+        stats = json.loads(sequence["stats_json"])
+        self.assertEqual(stats["prospects"], 2595)
+        self.assertEqual(stats["reached"], 159)
+        self.assertEqual(stats["replied"], 2)
+        self.assertEqual(stats["opened"], 9)
+        self.assertEqual(stats["senders"], 3)
+        self.assertEqual(stats["source"], "manyreach")
+        self.assertGreater(sequence["created_ts"], 1_700_000_000)
+
+    def test_a_second_import_updates_the_numbers_only(self):
+        with mock.patch.object(manyreach_api, "campaign_totals",
+                               return_value={"ok": True, "opened": 9, "clicked": 0, "replied": 2}):
+            manyreach_api.import_into_app()
+            again = manyreach_api.import_into_app()
+        self.assertEqual(again["sequences"], 0)
+        self.assertEqual(db.scalar("SELECT COUNT(*) FROM sequences WHERE name='[MR] With stats'"), 1)
+
+    def test_the_series_are_summed_from_their_count_arrays(self):
+        payload = {"data": {"opensSeries": {"count": [1, 2, None]},
+                            "clicksSeries": {"count": [0, 3]},
+                            "replySeries": {"count": [2]},
+                            "sentSeries": {"count": [39, 120]}}}
+        with mock.patch.object(manyreach_api, "_request",
+                               return_value={"ok": True, "data": payload["data"]}):
+            totals = manyreach_api.campaign_totals(1)
+        self.assertEqual(totals["opened"], 3)
+        self.assertEqual(totals["clicked"], 3)
+        self.assertEqual(totals["replied"], 2)
+        self.assertEqual(totals["sent"], 159)
 
 
 if __name__ == "__main__":

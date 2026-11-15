@@ -799,11 +799,13 @@
     });
   }
 
-  function seqNumber(value, pctOf) {
-    var text = num(value || 0);
-    if (pctOf && value) {
+  function seqNumber(value, pctOf, dashWhenZero) {
+    var number = Number(value || 0);
+    if (!number && dashWhenZero) return '<div class="dim">-</div>';
+    var text = num(number);
+    if (pctOf && number) {
       return '<div>' + text + '</div><div class="small dim">' +
-        Math.round((value / pctOf) * 100) + '%</div>';
+        Math.round((number / pctOf) * 100) + '%</div>';
     }
     return '<div>' + text + '</div>';
   }
@@ -850,6 +852,12 @@
         '<button class="btn primary" data-act="new-sequence">Create the first one</button></div></div>';
     }
 
+    var totals = { prospects: 0, reached: 0, opened: 0, clicked: 0, replied: 0, interested: 0, won: 0, last24: 0 };
+    rows.forEach(function (s) {
+      var m = s.metrics || {};
+      Object.keys(totals).forEach(function (key) { totals[key] += Number(m[key] || 0); });
+    });
+
     html += '<div class="card" style="padding:0"><div class="table-wrap"><table class="campaigns">' +
       '<thead><tr><th>Campaign</th><th class="num">prospects</th><th class="num">Reached</th>' +
       '<th class="num">opened</th><th class="num">clicked</th><th class="num">resp.</th>' +
@@ -860,27 +868,42 @@
         var when = s.created_ts ? fmtDate(s.created_ts) : '';
         return '<tr><td><div><strong>' + h(s.name) + '</strong> ' +
           '<span class="badge ' + (s.status === 'running' ? 'green' :
-            s.status === 'paused' ? 'amber' : 'grey') + '">' + h(s.status) + '</span></div>' +
+            s.status === 'paused' ? 'amber' : 'grey') + '">' + h(s.status) + '</span>' +
+          (s.source ? ' <span class="badge grey">' + h(s.source) + '</span>' : '') + '</div>' +
           '<div class="small dim">' + h(when) + ' · ' + num(m.senders || 0) + ' senders · ' +
-          num((s.steps || []).length) + ' steps</div></td>' +
+          num((s.steps || []).length) + ' steps' +
+          (s.stats_at ? ' · stats ' + fmtWhen(s.stats_at) : '') + '</div></td>' +
           '<td class="num">' + seqNumber(m.prospects) + '</td>' +
           '<td class="num">' + seqNumber(m.reached) + '</td>' +
-          '<td class="num">' + seqNumber(m.opened, m.reached) + '</td>' +
-          '<td class="num">' + seqNumber(m.clicked, m.reached) + '</td>' +
-          '<td class="num">' + seqNumber(m.replied, m.reached) + '</td>' +
-          '<td class="num">' + seqNumber(m.interested) + '</td>' +
-          '<td class="num">' + seqNumber(m.won, m.prospects) + '</td>' +
-          '<td class="num">' + seqNumber(m.last24) + '</td>' +
+          '<td class="num">' + seqNumber(m.opened, m.reached, s.source) + '</td>' +
+          '<td class="num">' + seqNumber(m.clicked, m.reached, s.source) + '</td>' +
+          '<td class="num">' + seqNumber(m.replied, m.reached, s.source) + '</td>' +
+          '<td class="num">' + seqNumber(m.interested, 0, s.source) + '</td>' +
+          '<td class="num">' + seqNumber(m.won, m.prospects, s.source) + '</td>' +
+          '<td class="num">' + seqNumber(m.last24, 0, s.source) + '</td>' +
           '<td class="num"><div class="nowrap">' +
           '<button class="btn sm ghost" data-enroll="' + s.id + '">Enroll</button> ' +
           '<button class="btn sm" data-edit-seq="' + s.id + '">Open</button> ' +
           '<button class="btn sm danger" data-del-seq="' + s.id + '">Delete</button>' +
           '</div></td></tr>';
-      }).join('') + '</tbody></table></div></div>';
+      }).join('') + '</tbody><tfoot><tr>' +
+      '<td><strong>Showing ' + num(rows.length) + ' of ' + num(sequences.length) + ' campaigns</strong></td>' +
+      '<td class="num"><strong>' + num(totals.prospects) + '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.reached) + '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.opened) +
+        (totals.reached ? '<div class="small dim">' + Math.round((totals.opened / totals.reached) * 100) + '%</div>' : '') +
+        '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.clicked) + '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.replied) + '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.interested) + '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.won) +
+        (totals.prospects ? '<div class="small dim">' + Math.round((totals.won / totals.prospects) * 100) + '%</div>' : '') +
+        '</strong></td>' +
+      '<td class="num"><strong>' + num(totals.last24) + '</strong></td><td></td></tr></tfoot></table></div></div>';
 
-    html += '<div class="small dim mt">' + num(rows.length) + ' of ' + num(sequences.length) +
-      ' campaigns. Opened, clicked and replied are percentages of Reached; opp. is won over ' +
-      'prospects. 24h counts the sends of the last day.</div>';
+    html += '<div class="small dim mt">Opened, clicked and replied are percentages of Reached; ' +
+      'opp. is won over prospects. 24h counts the sends of the last day. A campaign imported ' +
+      'from a sending platform shows that platform\'s numbers and the moment they were pulled.</div>';
     return html;
   }
 

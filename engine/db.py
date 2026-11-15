@@ -100,7 +100,8 @@ CREATE TABLE IF NOT EXISTS sequences (
     description TEXT DEFAULT '',
     active      INTEGER DEFAULT 1,
     created_ts  INTEGER DEFAULT 0,
-    updated_ts  INTEGER DEFAULT 0
+    updated_ts  INTEGER DEFAULT 0,
+    stats_json  TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS steps (
@@ -396,6 +397,7 @@ def _migrate(c):
         "leads": [("description", "TEXT DEFAULT ''"),
                   ("company_size", "TEXT DEFAULT ''"),
                   ("technologies", "TEXT DEFAULT ''")],
+        "sequences": [("stats_json", "TEXT DEFAULT ''")],
         "mailboxes": [("auth_type", "TEXT DEFAULT 'password'"),
                       ("source", "TEXT DEFAULT ''"),
                       ("oauth_provider", "TEXT DEFAULT ''"),

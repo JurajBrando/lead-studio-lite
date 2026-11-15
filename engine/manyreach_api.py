@@ -206,6 +206,78 @@ def _smtp_security(port):
     return "starttls"
 
 
+def _sequence_stats(item):
+    """The campaign's own numbers, as Manyreach shows them in its campaign table."""
+    senders = [part for part in str(item.get("fromEmails") or "").split(",") if part.strip()]
+    return {
+        "source": "manyreach",
+        "external_id": item.get("campaignId"),
+        "prospects": int(item.get("prospectCount") or 0),
+        "reached": int(item.get("sentCount") or 0),
+        "opened": int(item.get("openCount") or 0),
+        "clicked": int(item.get("clickCount") or 0),
+        "replied": int(item.get("replyCount") or 0),
+        "interested": int(item.get("interestedCount") or 0),
+        "won": int(item.get("conversionCount") or 0),
+        "bounced": int(item.get("bounceCount") or 0),
+        "senders": len(senders),
+        "status": str(item.get("status") or ""),
+        "created_at": str(item.get("createdAt") or ""),
+        "synced_ts": db.now(),
+    }
+
+
+def _created_ts(iso):
+    """'2026-11-11T17:18:42.527Z' -> epoch seconds (0 when unparsable)."""
+    from datetime import datetime, timezone
+    try:
+        text = str(iso or "").replace("Z", "+00:00")
+        return int(datetime.fromisoformat(text).astimezone(timezone.utc).timestamp())
+    except (TypeError, ValueError):
+        return 0
+
+
+def campaign_totals(campaign_id, date_start="", date_end=""):
+    """GET /campaigns/{id}/stats - the opens, clicks and replies as time series, summed."""
+    if not campaign_id:
+        return {"ok": False, "error": "No campaign id."}
+    params = {}
+    if date_start:
+        params["dateStart"] = date_start
+    if date_end:
+        params["dateEnd"] = date_end
+    path = "/campaigns/%d/stats" % int(campaign_id)
+    if params:
+        path += "?" + urllib.parse.urlencode(params)
+    answer = _request(path)
+    if not answer["ok"]:
+        return answer
+    data = answer.get("data") or {}
+
+    def total(key):
+        """A series is {"count": [...], "openCount": [...]} with nulls where nothing happened."""
+        series = data.get(key)
+        if isinstance(series, dict):
+            values = series.get("count") or series.get("openCount") or []
+        elif isinstance(series, list):
+            values = series
+        else:
+            values = []
+        value = 0
+        for point in values:
+            if isinstance(point, (int, float)):
+                value += point
+            elif isinstance(point, dict):
+                for field in ("value", "count", "total", "y"):
+                    if isinstance(point.get(field), (int, float)):
+                        value += point[field]
+                        break
+        return value
+
+    return {"ok": True, "opened": total("opensSeries"), "clicked": total("clicksSeries"),
+            "replied": total("replySeries"), "sent": total("sentSeries")}
+
+
 def import_into_app():
     """Senders become mailboxes, campaigns become one-step sequences.
 
@@ -218,7 +290,8 @@ def import_into_app():
     known_boxes = {str(row["from_email"] or "").lower() for row in db.rows("SELECT from_email FROM mailboxes")}
     known_sequences = {str(row["name"] or "").lower() for row in db.rows("SELECT name FROM sequences")}
     added_boxes = skipped_boxes = no_password = inactive = 0
-    added_sequences = skipped_sequences = 0
+    added_sequences = skipped_sequences = updated_sequences = 0
+    lookups = 0
     now = db.now()
     for row in rows:
         try:
@@ -261,10 +334,36 @@ def import_into_app():
                 skipped_sequences += 1
                 continue
             label = ("[MR] " + name)[:120]
-            if label.lower() in known_sequences:
-                skipped_sequences += 1
+            stats = _sequence_stats(item)
+            # The list endpoint reports prospects, sends, replies and conversions but leaves
+            # opens and clicks at zero; those live in the campaign's own stats series.
+            if int(item.get("sentCount") or 0) > 0 and not stats["opened"] and lookups < 25:
+                lookups += 1
+                series = campaign_totals(
+                    item.get("campaignId"),
+                    date_start=str(item.get("createdAt") or "")[:10],
+                    date_end="")
+                if series.get("ok"):
+                    stats["opened"] = int(series.get("opened") or 0)
+                    stats["clicked"] = int(series.get("clicked") or 0)
+                    stats["replied"] = max(stats["replied"], int(series.get("replied") or 0))
+                    stats["series_ts"] = db.now()
+            encoded = json.dumps(stats)
+            existing = db.one("SELECT * FROM sequences WHERE lower(name)=?", (label.lower(),))
+            if existing:
+                # The campaign is already here: refresh its numbers, never touch its steps.
+                if (existing.get("stats_json") or "") != encoded:
+                    db.update("sequences", existing["id"],
+                              {"stats_json": encoded,
+                               "created_ts": (_created_ts(item.get("createdAt"))
+                                              or existing.get("created_ts") or now)})
+                    updated_sequences += 1
+                else:
+                    skipped_sequences += 1
                 continue
-            sequence_id = db.insert("sequences", {"name": label, "created_ts": now, "active": 1})
+            sequence_id = db.insert("sequences", {"name": label,
+                                                  "created_ts": _created_ts(item.get("createdAt")) or now,
+                                                  "active": 1, "stats_json": encoded})
             db.insert("steps", {
                 "sequence_id": sequence_id, "step_no": 1, "delay_days": 0,
                 "subject": str(item.get("subject") or name)[:200],
@@ -275,4 +374,5 @@ def import_into_app():
         db.event("manyreach", "imported %d mailboxes, %d sequences" % (added_boxes, added_sequences))
     return {"ok": True, "mailboxes": added_boxes, "mailboxes_skipped": skipped_boxes,
             "mailboxes_without_password": no_password, "sequences": added_sequences,
+            "sequences_updated": updated_sequences,
             "sequences_skipped": skipped_sequences}
