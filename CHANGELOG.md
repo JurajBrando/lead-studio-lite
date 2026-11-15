@@ -1,3 +1,33 @@
+## [1.18.0] - 2026-11-15
+
+Daily moved to the top, and wired to what you sell.
+
+### Changed
+
+- **Daily is the first item in the sidebar**, above Dashboard, and it opens on the findings feed —
+  Automation, Brands and Match are the tabs beside it — instead of on the job list.
+- Every finding is **scored against your offers**: the offer keywords are looked up in the company,
+  title, kind, domain and payload, giving a fit percentage, the offer that fits and the words that
+  matched. A select targets one offer or all of them; *Only findings that match* hides the rest;
+  the list is sorted best fit first.
+
+### Added
+
+- **Email** on a finding: the message is written from that offer's pitch (merge fields, affiliate
+  link and disclosure), shown in a modal with the recipient, the sending mailbox and its remaining
+  daily quota, and sent from a real mailbox — recorded as a send, and the lead flips to contacted.
+- **Campaign** on a finding: it becomes a lead and enters the chosen sequence at step one.
+- **To lead** keeps the simple path: the finding becomes a lead with the finding attached as a note.
+- `engine/daily.py` — `score`, `feed`, `promote`, `draft`, `to_campaign`, `contact` — plus
+  `/api/signals/draft`, `/api/signals/campaign` and `/api/signals/contact`. `/api/signals` now
+  returns the fit, the matching offer and the offers to choose from.
+
+### Tests
+
+384 (was 373): a matching and a non-matching score, feed ordering and the `min_fit` filter,
+promote with and without a domain, the draft written from the offer pitch, enrolment into a
+sequence, a real contact recorded as a send, and a mailbox at its cap refusing.
+
 ## [1.17.0] - 2026-11-15
 
 Several inboxes, really: the queue spreads over them and the inbox merges them.

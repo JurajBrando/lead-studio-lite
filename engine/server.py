@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -801,13 +801,13 @@ def r_job_runs(q):
 def r_signals(q):
     kind = (q.get("kind") or "").strip()
     limit = min(500, int(q.get("limit") or 200))
-    if kind:
-        rows = db.rows("SELECT * FROM signals WHERE kind=? ORDER BY id DESC LIMIT ?", (kind, limit))
-    else:
-        rows = db.rows("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (limit,))
+    rows = daily.feed(limit=limit, kind=kind, offer_id=int(q.get("offer_id") or 0),
+                      min_fit=int(q.get("min_fit") or 0))
     kinds = db.rows("SELECT kind, COUNT(*) AS n FROM signals GROUP BY kind ORDER BY n DESC")
-    return {"ok": True, "signals": rows, "kinds": kinds,
+    offers = [{"id": row["id"], "name": row["name"]} for row in daily.active_offers()]
+    return {"ok": True, "signals": rows, "kinds": kinds, "offers": offers,
             "total": db.scalar("SELECT COUNT(*) FROM signals"),
+            "matching": sum(1 for row in rows if row["fit"]),
             "unseen": db.scalar("SELECT COUNT(*) FROM signals WHERE seen=0")}
 
 
@@ -820,37 +820,37 @@ def r_signal_seen(p):
 
 
 def r_signal_promote(p):
-    signal = db.one("SELECT * FROM signals WHERE id=?", (p.get("id"),))
-    if not signal:
-        return {"ok": False, "error": "That signal no longer exists."}
-    email = (p.get("email") or "").strip().lower()
-    if not email and signal["domain"]:
-        email = "info@" + signal["domain"]
-    if not email:
-        return {"ok": False, "error": "This signal has no domain - type the email address to use."}
-    if not mail.valid_email(email):
-        return {"ok": False, "error": "That is not a valid email address."}
+    try:
+        if p.get("id"):
+            return daily.promote(int(p["id"]), p.get("email") or "")
+        raise ValueError("Pick a finding first.")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
-    note = "Signal %s: %s (%s)" % (signal["kind"], signal["company"] or signal["title"],
-                                   signal["source_url"] or "")
-    existing = db.one("SELECT * FROM leads WHERE email=?", (email,))
-    if existing:
-        notes = (existing.get("notes") or "").strip()
-        if note not in notes:
-            db.update("leads", existing["id"], {"notes": (notes + "\n" + note).strip()[:4000],
-                                                "updated_ts": db.now()})
-        db.execute("UPDATE signals SET lead_id=?, seen=1 WHERE id=?", (existing["id"], signal["id"]))
-        return {"ok": True, "lead_id": existing["id"], "existing": True}
 
-    ts = db.now()
-    lead_id = db.insert("leads", {
-        "email": email, "company": (signal["company"] or "")[:200],
-        "domain": signal["domain"] or email.rsplit("@", 1)[-1],
-        "source": signal["kind"], "status": "new", "verify_status": "unverified",
-        "notes": note[:2000], "created_ts": ts, "updated_ts": ts})
-    db.execute("UPDATE signals SET lead_id=?, seen=1 WHERE id=?", (lead_id, signal["id"]))
-    db.event("promote", "%s -> %s" % (signal["kind"], email))
-    return {"ok": True, "lead_id": lead_id, "existing": False}
+def r_signal_draft(p):
+    try:
+        return daily.draft(int(p.get("id") or 0), int(p.get("offer_id") or 0),
+                           use_ai=bool(p.get("use_ai")))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_signal_campaign(p):
+    try:
+        return daily.to_campaign(int(p.get("id") or 0), int(p.get("sequence_id") or 0),
+                                 p.get("email") or "", int(p.get("offer_id") or 0))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_signal_contact(p):
+    try:
+        return daily.contact(int(p.get("id") or 0), p.get("subject") or "", p.get("body") or "",
+                             p.get("email") or "", int(p.get("mailbox_id") or 0),
+                             int(p.get("offer_id") or 0))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def r_domains(q):
@@ -1471,6 +1471,9 @@ ROUTES_POST = {
     "/api/jobs/update": r_job_update,
     "/api/signals/seen": r_signal_seen,
     "/api/signals/promote": r_signal_promote,
+    "/api/signals/draft": r_signal_draft,
+    "/api/signals/campaign": r_signal_campaign,
+    "/api/signals/contact": r_signal_contact,
     "/api/brand/save": r_brand_save,
     "/api/brand/delete": r_brand_delete,
     "/api/brand/import": r_brand_import,

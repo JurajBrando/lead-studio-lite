@@ -176,9 +176,18 @@ by a job.
 | Merge files into leads | daily 02:00 | your `data/imports/` folder |
 | Brand watch | daily 08:00 | DNS + new-domain feed + phishing lists |
 
-Signals are evidence, not contacts: use **To lead** on any signal to turn it into a lead (you supply
-the email) and the finding is attached to it. A bankruptcy signal additionally flags existing leads
-so you never pitch a company that just filed.
+Signals are evidence, not contacts, and the **Daily** page (first item in the sidebar) is where they
+become work. Every finding is scored against the offers you sell — the offer keywords are looked up
+in the company, title, kind, domain and payload — so the list arrives sorted by *fit* with the offer
+that matches named, and *Only findings that match* hides the rest. From a finding you can:
+
+- **Email** — the message is written from that offer's pitch (merge fields, affiliate link and
+  disclosure), you pick the mailbox, and it goes out inside that mailbox's daily quota; the lead is
+  created and flips to contacted.
+- **Campaign** — the finding becomes a lead and enters a sequence at step one.
+- **To lead** — just the contact record, with the finding attached as a note.
+
+A bankruptcy signal additionally flags existing leads so you never pitch a company that just filed.
 
 Schedules, parameters and on/off switches live on the Automation page. Details, licences and how to
 write your own job: **[docs/AUTOMATION.md](docs/AUTOMATION.md)**.

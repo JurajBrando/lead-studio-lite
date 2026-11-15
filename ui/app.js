@@ -224,7 +224,7 @@
   }
 
   // ------------------------------------------------------------------ views
-  var DAILY = ['automation', 'signals', 'brands', 'match'];
+  var DAILY = ['signals', 'automation', 'brands', 'match'];
 
   function dailyTabs(active) {
     var labels = { automation: 'Automation', signals: 'Signals', brands: 'Brands', match: 'Match' };
@@ -990,65 +990,204 @@
   }
 
   // ---- signals
+  // ---- daily: what the jobs found, aimed at what you sell
   function viewSignals(d) {
-    var html = pageHead('Signals', 'Everything the jobs found: new domains, ad spend, hiring, filings, fraud.',
-      '<button class="btn" data-act="signals-seen">Mark all seen</button>');
-    html += '<div class="card tight" id="signal-filter" style="margin-bottom:12px"><div class="small dim">Loading...</div></div>';
-    html += '<div class="card" id="signals-box" style="padding:0"><div class="small dim" style="padding:16px">Loading signals...</div></div>';
+    var html = pageHead('Daily',
+      'Everything the jobs found, scored against the offers you sell - then turned into a lead, ' +
+      'an email or a campaign.',
+      '<button class="btn" data-act="signals-seen">Mark all seen</button>' +
+      '<button class="btn" data-act="run-due">Run due jobs</button>');
+    html += '<div class="card tight" id="daily-target" style="margin-bottom:12px">' +
+      '<div class="small dim">Loading...</div></div>';
+    html += '<div class="card tight" id="signal-filter" style="margin-bottom:12px">' +
+      '<div class="small dim">Loading...</div></div>';
+    html += '<div class="card" id="signals-box" style="padding:0">' +
+      '<div class="small dim" style="padding:16px">Loading findings...</div></div>';
     setTimeout(loadSignals, 20);
     return html;
   }
 
   function loadSignals() {
-    var url = '/api/signals?limit=300' + (state.signalKind ? '&kind=' + encodeURIComponent(state.signalKind) : '');
+    var url = '/api/signals?limit=300' +
+      (state.signalKind ? '&kind=' + encodeURIComponent(state.signalKind) : '') +
+      (state.dailyOffer ? '&offer_id=' + state.dailyOffer : '') +
+      (state.dailyOnlyMatch ? '&min_fit=1' : '');
     call(url).then(function (res) {
-      var filter = $('#signal-filter'), box = $('#signals-box');
-      if (!filter || !box) return;
+      var target = $('#daily-target'), filter = $('#signal-filter'), box = $('#signals-box');
+      if (!target || !filter || !box) return;
       if (!res.ok) { box.innerHTML = '<div class="small dim" style="padding:16px">' + h(res.error) + '</div>'; return; }
+      var offers = res.offers || [];
+      target.innerHTML = '<div class="row" style="align-items:flex-end;gap:12px">' +
+        '<div class="field" style="max-width:320px"><label>What you sell</label>' +
+        '<select id="daily-offer"><option value="0">Score against every offer</option>' +
+        offers.map(function (offer) {
+          return '<option value="' + offer.id + '"' +
+            (Number(state.dailyOffer) === offer.id ? ' selected' : '') + '>' + h(offer.name) + '</option>';
+        }).join('') + '</select></div>' +
+        '<div class="field" style="max-width:230px"><label>&nbsp;</label>' +
+        '<label class="check small"><input type="checkbox" id="daily-only"' +
+        (state.dailyOnlyMatch ? ' checked' : '') + '> Only findings that match</label></div>' +
+        '<div class="grow small dim">' + num(res.matching) + ' of ' + num(res.total) +
+        ' findings fit ' + (offers.length ? 'your offers' : 'nothing yet') + '.' +
+        (offers.length ? '' : ' Add keywords to an offer in Toolbox so findings can be scored.') + '</div></div>';
       var kinds = res.kinds || [];
       filter.innerHTML = '<div class="toolbar" style="margin:0"><span class="small dim">' +
-        num(res.total) + ' signals · ' + num(res.unseen) + ' new</span><div class="spacer" style="flex:1"></div>' +
-        '<span class="chip" data-kind="">All</span>' +
+        num(res.total) + ' findings · ' + num(res.unseen) + ' new</span>' +
+        '<div class="spacer" style="flex:1"></div><span class="chip' +
+        (state.signalKind ? '' : ' on') + '" data-kind="">All</span>' +
         kinds.map(function (k) {
-          return '<span class="chip" data-kind="' + h(k.kind) + '">' + h(k.kind) + ' ' + num(k.n) + '</span>';
+          return '<span class="chip' + (state.signalKind === k.kind ? ' on' : '') +
+            '" data-kind="' + h(k.kind) + '">' + h(k.kind) + ' ' + num(k.n) + '</span>';
         }).join('') + '</div>';
       if (!res.signals.length) {
-        box.innerHTML = '<div class="empty" style="padding:36px"><div class="big">No signals yet</div>' +
-          '<p>Open <strong>Automation</strong> and run a job: new domains, ads, hiring, bankruptcy or fraud. ' +
-          'Each one writes what it finds here.</p></div>';
-        return;
+        box.innerHTML = '<div class="empty" style="padding:36px"><div class="big">Nothing to work with</div>' +
+          '<p>Open <strong>Automation</strong> and run a job, or clear the filters above. ' +
+          'Each job writes what it finds here.</p></div>';
+      } else {
+        box.innerHTML = '<div class="list">' + res.signals.map(function (s) {
+          var fit = s.fit ? '<span class="badge ' + (s.fit >= 50 ? 'green' : 'amber') + '">' +
+            s.fit + '% fit</span>' : '<span class="badge grey">no match</span>';
+          return '<div class="list-item"><div class="avatar">' +
+            h((s.kind || '?').slice(0, 2).toUpperCase()) + '</div>' +
+            '<div class="grow"><div>' + (s.seen ? '' : '<span class="badge blue">new</span> ') +
+            '<span class="badge grey">' + h(s.kind) + '</span> ' + fit + ' <strong>' +
+            h(s.company || s.domain || s.title || '') + '</strong></div>' +
+            '<div class="t-sub">' + h([s.domain, s.title, s.offer].filter(Boolean).join(' · ')) +
+            ' · ' + fmtWhen(s.ts) + '</div>' +
+            (s.matched && s.matched.length ? '<div class="small dim">matches: ' +
+              h(s.matched.join(', ')) + '</div>' : '') +
+            (s.source_url ? '<div class="small"><a href="' + h(s.source_url) +
+              '" target="_blank" rel="noopener">' + h(s.source || 'source') + '</a></div>' : '') +
+            '</div><div class="nowrap">' +
+            '<button class="btn sm" data-daily-email="' + s.id + '">Email</button> ' +
+            '<button class="btn sm" data-daily-campaign="' + s.id + '">Campaign</button> ' +
+            '<button class="btn sm ghost" data-promote="' + s.id + '">To lead</button>' +
+            '</div></div>';
+        }).join('') + '</div>';
+        $$('[data-daily-email]').forEach(function (b) {
+          b.onclick = function () { dailyEmail(Number(b.dataset.dailyEmail)); };
+        });
+        $$('[data-daily-campaign]').forEach(function (b) {
+          b.onclick = function () { dailyCampaign(Number(b.dataset.dailyCampaign)); };
+        });
+        $$('[data-promote]').forEach(function (b) {
+          b.onclick = function () { promoteSignal(Number(b.dataset.promote)); };
+        });
       }
-      box.innerHTML = '<div class="list">' + res.signals.map(function (s) {
-        var when = fmtWhen(s.ts);
-        return '<div class="list-item"><div class="avatar">' + h((s.kind || '?').slice(0, 2).toUpperCase()) + '</div>' +
-          '<div class="grow"><div>' + (s.seen ? '' : '<span class="badge blue">new</span> ') +
-          '<span class="badge grey">' + h(s.kind) + '</span> <strong>' +
-          h(s.company || s.domain || s.title || '') + '</strong></div>' +
-          '<div class="t-sub">' + h([s.domain, s.title].filter(Boolean).join(' · ')) + ' · ' + when + '</div>' +
-          (s.source_url ? '<div class="small"><a href="' + h(s.source_url) + '" target="_blank" rel="noopener">' +
-            h(s.source || 'source') + '</a></div>' : '') +
-          '</div><div class="nowrap"><button class="btn sm" data-promote="' + s.id + '">To lead</button></div></div>';
-      }).join('') + '</div>';
       $$('[data-kind]').forEach(function (chip) {
         chip.onclick = function () {
           state.signalKind = chip.dataset.kind || '';
           loadSignals();
         };
       });
-      $$('[data-promote]').forEach(function (b) {
-        b.onclick = function () { promoteSignal(Number(b.dataset.promote)); };
+      var offerSelect = $('#daily-offer');
+      if (offerSelect) {
+        offerSelect.onchange = function () {
+          state.dailyOffer = Number(offerSelect.value) || 0;
+          loadSignals();
+        };
+      }
+      var only = $('#daily-only');
+      if (only) {
+        only.onchange = function () { state.dailyOnlyMatch = only.checked; loadSignals(); };
+      }
+    });
+  }
+
+  function dailyMailboxes() {
+    var boxes = (state.data && state.data.mailboxes) || [];
+    return boxes.filter(function (b) { return b.active !== 0 && b.smtp_host; });
+  }
+
+  function dailyEmail(id) {
+    call('/api/signals/draft', { id: id, offer_id: state.dailyOffer || 0 }).then(function (r) {
+      if (!r.ok) return toast(r.error || 'Could not write that email', 'err');
+      var boxes = dailyMailboxes();
+      openModal({
+        title: 'Email from this finding',
+        body: '<div class="row"><div class="field"><label>To</label>' +
+          '<input type="email" id="de-to" value="' + h(r.to || '') + '" placeholder="info@company.com"></div>' +
+          '<div class="field"><label>From mailbox</label><select id="de-box">' +
+          (boxes.length ? boxes.map(function (b) {
+            return '<option value="' + b.id + '">' + h(b.name) + ' — ' +
+              b.sent_today + '/' + b.daily_limit + ' today</option>';
+          }).join('') : '<option value="0">no mailbox yet</option>') + '</select></div></div>' +
+          '<div class="field"><label>Subject</label>' +
+          '<input type="text" id="de-subject" value="' + h(r.subject) + '"></div>' +
+          '<div class="field"><label>Body</label>' +
+          '<textarea id="de-body" rows="10">' + h(r.body) + '</textarea></div>' +
+          '<div class="small dim">Written from <strong>' + h(r.offer) + '</strong>' +
+          (r.used_ai ? ' with the AI provider' : ' using the offer pitch') +
+          '. Merge fields such as {{first_name}} are filled from the lead when it sends.</div>',
+        footer: '<button class="btn" data-close>Cancel</button>' +
+          '<button class="btn" id="de-save">Save as lead only</button>' +
+          '<button class="btn primary" id="de-send">Send now</button>',
+        onMount: function (root) {
+          $('#de-save', root).onclick = function () {
+            call('/api/signals/promote', { id: id, email: $('#de-to', root).value }).then(function (res) {
+              if (!res.ok) return toast(res.error, 'err');
+              toast('Lead saved');
+              closeModal(); refresh();
+            });
+          };
+          $('#de-send', root).onclick = function () {
+            call('/api/signals/contact', {
+              id: id, email: $('#de-to', root).value,
+              subject: $('#de-subject', root).value, body: $('#de-body', root).value,
+              mailbox_id: Number($('#de-box', root).value || 0)
+            }).then(function (res) {
+              if (!res.ok) return toast(res.error || 'The email did not go out', 'err');
+              toast('Sent from ' + res.mailbox + ' to ' + res.to);
+              closeModal(); loadSignals(); refresh();
+            });
+          };
+        }
       });
+    });
+  }
+
+  function dailyCampaign(id) {
+    var sequences = (state.data && state.data.sequences) || [];
+    openModal({
+      title: 'Put this finding in a campaign',
+      body: (sequences.length
+        ? '<div class="field"><label>Sequence</label><select id="dc-seq">' +
+          sequences.map(function (s) {
+            return '<option value="' + s.id + '">' + h(s.name) + ' · ' +
+              num((s.steps || []).length) + ' steps</option>';
+          }).join('') + '</select></div>' +
+          '<div class="field"><label>Email address <span class="dim">(optional)</span></label>' +
+          '<input type="email" id="dc-email" placeholder="info@company.com - empty uses info@domain">' +
+          '<div class="hint">The finding becomes a lead, is attached as a note, and enters the ' +
+          'sequence at step one.</div></div>'
+        : '<div class="callout"><strong>No sequence yet.</strong> Create one in Sequences, then come back.</div>'),
+      footer: '<button class="btn" data-close>Cancel</button>' +
+        (sequences.length ? '<button class="btn primary" id="dc-go">Add to sequence</button>' : ''),
+      onMount: function (root) {
+        if (!sequences.length) return;
+        $('#dc-go', root).onclick = function () {
+          call('/api/signals/campaign', {
+            id: id, sequence_id: Number($('#dc-seq', root).value),
+            email: $('#dc-email', root).value, offer_id: state.dailyOffer || 0
+          }).then(function (r) {
+            if (!r.ok) return toast(r.error || 'Could not enrol that lead', 'err');
+            toast('In "' + r.sequence + '" as ' + r.email);
+            closeModal(); loadSignals(); refresh();
+          });
+        };
+      }
     });
   }
 
   function promoteSignal(id) {
     openModal({
-      title: 'Turn this signal into a lead',
+      title: 'Turn this finding into a lead',
       body: '<div class="field"><label>Email address</label>' +
         '<input type="email" id="pr-email" placeholder="info@company.com">' +
-        '<div class="hint">The signal only knows the company or domain. Add the address you want to contact; ' +
-        'the finding is attached to the lead as a note.</div></div>',
-      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="pr-go">Create lead</button>',
+        '<div class="hint">The finding only knows the company or domain. Add the address you want to ' +
+        'contact; the finding is attached to the lead as a note.</div></div>',
+      footer: '<button class="btn" data-close>Cancel</button>' +
+        '<button class="btn primary" id="pr-go">Create lead</button>',
       onMount: function (root) {
         $('#pr-go', root).onclick = function () {
           call('/api/signals/promote', { id: id, email: $('#pr-email', root).value }).then(function (r) {
@@ -4225,7 +4364,7 @@
   var VIEWS = ['dashboard', 'leads', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'mailboxes', 'settings'];
 
   function go(view) {
-    if (view === 'daily') view = 'automation';
+    if (view === 'daily') view = 'signals';
     if (VIEWS.indexOf(view) < 0) view = 'dashboard';
     state.view = view;
     SOCIAL.rendered = false;
