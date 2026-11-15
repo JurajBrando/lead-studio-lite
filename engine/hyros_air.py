@@ -11,15 +11,18 @@ from . import ads, db
 
 BASE = "https://api.hyros.com/v1"
 LINKS = {
-    "product": "https://hyros.com/",
-    "changelog": "https://hyros.com/updates/changelog/version-2-2/",
+    "product": "https://hyros.com/enterprise",
+    "docs": "https://docs.hyros.com/",
+    "api": "https://api-docs.hyros.com/",
+    "mcp": "https://mcp.hyros.com/mcp",
 }
-# Paths from the Hyros API (v1). Editable per installation in data/settings.json under
-# `hyros_air.paths` if Hyros changes them or your account uses a different surface.
+# Paths from the published Hyros API (v1.46). Editable per installation in data/settings.json
+# under `hyros_air.paths` if Hyros moves them.
 PATHS = {
-    "leads": "/api/v1.0/leads",
-    "sales": "/api/v1.0/sales",
-    "calls": "/api/v1.0/calls",
+    "leads": ads.HYROS_PATHS["leads"],
+    "sales": ads.HYROS_PATHS["sales"],
+    "calls": ads.HYROS_PATHS["calls"],
+    "ad-accounts": ads.HYROS_PATHS["ad_accounts"],
 }
 
 
@@ -46,8 +49,8 @@ def status():
             "last_pull": int(block.get("last_pull") or 0),
             "last_count": int(block.get("last_count") or 0),
             "paths": _paths(), "links": LINKS,
-            "note": "HYROS AIR is a paid Hyros add-on. This page reads what it did in your "
-                    "Hyros account through the HYROS API key from the Ad Tracking tab."}
+            "note": "HYROS AIR is a paid Hyros add-on (Enterprise). This page reads what it did "
+                    "in your Hyros account through the HYROS API key from the Ad Tracking tab."}
 
 
 def pull(kind="leads", limit=100):

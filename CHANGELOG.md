@@ -1,3 +1,31 @@
+## [1.21.0] - 2026-11-15
+
+Hyros, built on the published API instead of guesses.
+
+### Added
+
+- **Two documented Hyros calls** on the Ads → HYROS Ad Tracking tab: *Ad accounts*
+  (`GET /api/v1.0/ad-accounts`, the IDs the attribution report needs) and *Attribution · 30 days*
+  (`GET /api/v1.0/attribution?attributionModel=last_click&…&fields=sales,revenue,cost,roas`), both
+  rendered as tables with the raw JSON beside them. `engine/ads.py` builds the window itself.
+- **The official Hyros MCP server**: one button registers `https://mcp.hyros.com/mcp` as an MCP
+  connection with the same API key as a bearer token, so the tools can be listed and run from
+  Settings → MCP connections.
+- Links to [api-docs.hyros.com](https://api-docs.hyros.com/), [docs.hyros.com](https://docs.hyros.com/)
+  and the Enterprise page on the HYROS AIR tab, plus `ad-accounts` in the collections it can pull.
+
+### Fixed
+
+- **The Hyros base URL is `https://api.hyros.com/v1`, not `/v1`-less.** The docs' OpenAPI omits a
+  `servers:` block and some third-party notes drop the `/v1`, but probed live the real path
+  `/v1/api/v1.0/leads` answers `401 Api key not valid` while `/api/v1.0/leads` is a Tomcat `404`.
+  The client now uses the path that exists, and a test pins it.
+
+### Tests
+
+416 (was 412): the documented ad-accounts and attribution URLs with their query, the `result`
+envelope, and the base URL that answers.
+
 ## [1.20.0] - 2026-11-15
 
 An Ads tab at the bottom, and HYROS AIR as the paid service it is.

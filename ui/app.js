@@ -1258,7 +1258,35 @@
       '<button class="btn" data-act="ads-test" data-name="' + p.name + '">Test</button> ' +
       '<button class="btn" data-act="ads-pull" data-name="' + p.name + '">Pull</button>' +
       '<div class="hint small dim">Nothing is guessed: the call goes to the base URL and path you ' +
-      'give, with ' + h(p.auth) + ' auth, and the raw JSON comes back below.</div></div>';
+      'give, with ' + h(p.auth) + ' auth, and the raw JSON comes back below.</div>' +
+      (p.name === 'hyros'
+        ? '<div class="sep"></div><div class="toolbar">' +
+          '<button class="btn sm" data-act="hyros-accounts">Ad accounts</button>' +
+          '<button class="btn sm" data-act="hyros-attribution">Attribution · 30 days</button>' +
+          '<button class="btn sm ghost" data-act="hyros-mcp">Add the Hyros MCP server</button></div>' +
+          '<div class="hint small dim">The first two use the published paths ' +
+          '(<span class="mono">GET /api/v1.0/ad-accounts</span>, ' +
+          '<span class="mono">GET /api/v1.0/attribution</span>) from ' +
+          '<a href="https://api-docs.hyros.com/" target="_blank" rel="noopener">api-docs.hyros.com</a>. ' +
+          'The MCP server at <span class="mono">mcp.hyros.com/mcp</span> is registered with the same ' +
+          'key as a token connection.</div>'
+        : '') + '</div>';
+  }
+
+  function adsRowsHtml(title, rows) {
+    if (!rows || !rows.length) return '';
+    var keys = Object.keys(rows[0]).slice(0, 7);
+    return '<div class="card" style="background:var(--panel-2)"><div class="card-head"><h3>' +
+      h(title) + '</h3><div class="spacer"></div><span class="badge grey">' + num(rows.length) +
+      '</span></div><div class="table-wrap"><table><thead><tr>' +
+      keys.map(function (k) { return '<th>' + h(k) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      rows.slice(0, 100).map(function (row) {
+        return '<tr>' + keys.map(function (k) {
+          var value = row[k];
+          return '<td class="small">' + h(typeof value === 'object' && value !== null
+            ? JSON.stringify(value).slice(0, 80) : value) + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div></div>';
   }
 
   function wireAds() { }
@@ -1278,7 +1306,9 @@
       'HYROS AIR is a paid Hyros service - subscribe to it and manage it at Hyros. This page is ' +
       'only the client: it reads what the agent did in your account with your HYROS API key.',
       '<a class="btn" href="' + h((info && info.links && info.links.product) ||
-        'https://hyros.com/') + '" target="_blank" rel="noopener">Open Hyros</a>');
+        'https://hyros.com/enterprise') + '" target="_blank" rel="noopener">Hyros Enterprise</a>' +
+      '<a class="btn" href="' + h((info && info.links && info.links.api) ||
+        'https://api-docs.hyros.com/') + '" target="_blank" rel="noopener">API docs</a>');
     if (!info) {
       setTimeout(loadHyros, 20);
       return html + '<div class="card"><div class="small dim">Loading the HYROS connection...</div></div>';
@@ -1292,6 +1322,8 @@
       (info.has_key ? 'HYROS API key saved' : 'no HYROS API key') + '</span></div>' +
       '<div class="small muted">' + h(info.note) + '</div>' +
       '<div class="small dim mono mt">' + h(info.base_url) + '</div>' +
+      '<div class="small dim">Hyros also runs an official MCP server at ' +
+      '<span class="mono">mcp.hyros.com/mcp</span> - add it from Ads → HYROS Ad Tracking.</div>' +
       (info.has_key
         ? '<div class="toolbar mt">' +
           ['leads', 'sales', 'calls'].map(function (kind) {
@@ -2556,6 +2588,42 @@
       });
     },
     import: function () { importModal(); },
+    'hyros-accounts': function () {
+      var out = $('#ads-out');
+      if (out) out.innerHTML = '<div class="small dim">Reading ad accounts from Hyros...</div>';
+      call('/api/ads/hyros/accounts', {}).then(function (r) {
+        if (!out) return;
+        if (!r.ok) {
+          out.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+            h(r.error) + '</div>';
+          return;
+        }
+        out.innerHTML = adsRowsHtml('Ad accounts', r.rows) ||
+          '<pre class="log">' + h(JSON.stringify(r.raw, null, 1).slice(0, 4000)) + '</pre>';
+      });
+    },
+    'hyros-attribution': function () {
+      var out = $('#ads-out');
+      if (out) out.innerHTML = '<div class="small dim">Reading attribution for the last 30 days...</div>';
+      call('/api/ads/hyros/attribution', { days: 30 }).then(function (r) {
+        if (!out) return;
+        if (!r.ok) {
+          out.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+            h(r.error) + '</div>';
+          return;
+        }
+        out.innerHTML = '<div class="small dim">' + h((r.window || []).join(' to ')) + '</div>' +
+          (adsRowsHtml('Attribution', r.rows) ||
+            '<pre class="log">' + h(JSON.stringify(r.raw, null, 1).slice(0, 4000)) + '</pre>');
+      });
+    },
+    'hyros-mcp': function () {
+      call('/api/ads/hyros/mcp', {}).then(function (r) {
+        if (!r.ok) return toast(r.error || 'Could not add the MCP server', 'err');
+        toast('Hyros MCP server added - see MCP connections in Settings');
+        refresh();
+      });
+    },
     'ads-tab': function (button) {
       state.adsTab = button.dataset.tab;
       render();

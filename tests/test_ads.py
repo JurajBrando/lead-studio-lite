@@ -98,6 +98,10 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(seen["url"], "https://api.hyros.com/v1/api/v1.0/leads")
         self.assertEqual(seen["headers"].get("api-key"), "k-123")
 
+    def test_the_base_keeps_the_v1_segment(self):
+        # Probed live: /v1/api/v1.0/leads answers 401, the same path without /v1 is a 404.
+        self.assertEqual(ads.status("hyros")["base_url"], "https://api.hyros.com/v1")
+
     def test_datafast_uses_a_bearer_token(self):
         seen = {}
 
@@ -123,6 +127,52 @@ class RequestTests(unittest.TestCase):
         answer = ads.pull("plai")
         self.assertFalse(answer["ok"])
         self.assertIn("base URL", answer["error"])
+
+
+class HyrosDocumentedCallsTests(unittest.TestCase):
+    """The two calls the Hyros tab offers, on the paths the API docs publish."""
+
+    def setUp(self):
+        db.init_db()
+        wipe()
+        ads.save("hyros", {"api_key": "k-1", "base_url": "https://api.hyros.com/v1"})
+
+    def tearDown(self):
+        wipe()
+
+    def test_ad_accounts_uses_the_documented_path(self):
+        seen = {}
+
+        def fake(request, timeout=0):
+            seen["url"] = request.full_url
+            return FakeResponse(json.dumps({"result": [{"id": 1, "name": "fb"}]}))
+
+        with mock.patch.object(ads.urllib.request, "urlopen", side_effect=fake):
+            answer = ads.hyros_ad_accounts()
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(seen["url"], "https://api.hyros.com/v1/api/v1.0/ad-accounts")
+        self.assertEqual(answer["count"], 1)
+
+    def test_attribution_sends_a_window_and_the_fields(self):
+        seen = {}
+
+        def fake(request, timeout=0):
+            seen["url"] = request.full_url
+            return FakeResponse(json.dumps({"result": [{"spend": 12.5, "roas": 2.1}]}))
+
+        with mock.patch.object(ads.urllib.request, "urlopen", side_effect=fake):
+            answer = ads.hyros_attribution(30)
+        self.assertTrue(answer["ok"], answer)
+        self.assertIn("/v1/api/v1.0/attribution?", seen["url"])
+        self.assertIn("attributionModel=last_click", seen["url"])
+        self.assertIn("fields=sales%2Crevenue%2Ccost%2Croas", seen["url"])
+        self.assertEqual(len(answer["window"]), 2)
+        self.assertEqual(answer["count"], 1)
+
+    def test_the_result_envelope_is_unwrapped(self):
+        self.assertEqual(ads.rows_of({"result": [{"a": 1}], "request_id": "x"}), [{"a": 1}])
+        self.assertEqual(ads.rows_of([{"a": 1}]), [{"a": 1}])
+        self.assertEqual(ads.rows_of({"unexpected": True}), [])
 
 
 if __name__ == "__main__":

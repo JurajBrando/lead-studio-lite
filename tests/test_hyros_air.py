@@ -35,7 +35,10 @@ class StatusTests(unittest.TestCase):
         status = hyros_air.status()
         self.assertEqual(status["base_url"], "https://api.hyros.com/v1")
         self.assertIn("paid", status["note"])
-        self.assertEqual(sorted(status["paths"]), ["calls", "leads", "sales"])
+        self.assertEqual(sorted(status["paths"]),
+                         ["ad-accounts", "calls", "leads", "sales"])
+        self.assertIn("api-docs.hyros.com", status["links"]["api"])
+        self.assertIn("mcp.hyros.com", status["links"]["mcp"])
 
     def test_without_a_key_it_says_where_to_put_one(self):
         answer = hyros_air.pull("leads")

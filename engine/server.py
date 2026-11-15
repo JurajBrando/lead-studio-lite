@@ -323,6 +323,24 @@ def r_ads_pull(p):
         return {"ok": False, "error": str(exc)}
 
 
+def r_hyros_accounts(p=None):
+    return ads.hyros_ad_accounts()
+
+
+def r_hyros_attribution(p):
+    return ads.hyros_attribution(int(p.get("days") or 30), p.get("model") or "last_click",
+                                 p.get("level") or "", p.get("ad_account_id") or "")
+
+
+def r_hyros_mcp(p=None):
+    """Register the official Hyros MCP server with the same API key, as a token connection."""
+    key = ads.api_key_of("hyros")
+    if not key:
+        return {"ok": False, "error": "Add the HYROS API key first (Ads -> HYROS Ad Tracking)."}
+    return mcp_client.save_custom({"name": "hyros", "label": "Hyros MCP",
+                                   "url": "https://mcp.hyros.com/mcp", "token": key})
+
+
 def r_hyros_status(q=None):
     return {"ok": True, **hyros_air.status()}
 
@@ -1502,6 +1520,9 @@ ROUTES_POST = {
     "/api/ads/save": r_ads_save,
     "/api/ads/test": r_ads_test,
     "/api/ads/pull": r_ads_pull,
+    "/api/ads/hyros/accounts": r_hyros_accounts,
+    "/api/ads/hyros/attribution": r_hyros_attribution,
+    "/api/ads/hyros/mcp": r_hyros_mcp,
     "/api/hyros": r_hyros_status,
     "/api/hyros/pull": r_hyros_pull,
     "/api/hyros/paths": r_hyros_paths,

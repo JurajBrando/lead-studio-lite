@@ -21,8 +21,9 @@ PLATFORMS = {
     },
     "hyros": {
         "label": "HYROS Ad Tracking", "kind": "api",
-        "note": "Attribution, leads and sales. Auth header: API-Key.",
-        "docs": "https://hyros.com/updates/changelog/version-2-2/",
+        "note": "Attribution, ad accounts, leads and sales from the Hyros API. Auth header: API-Key. "
+                "The Ad accounts and Attribution buttons below use the documented paths.",
+        "docs": "https://api-docs.hyros.com/",
         "base_url": "https://api.hyros.com/v1", "auth": "API-Key", "path": "",
     },
     "plai": {
@@ -46,6 +47,18 @@ def platform(name):
     if key not in PLATFORMS:
         raise ValueError("Unknown ad platform.")
     return dict(PLATFORMS[key])
+
+
+# The paths from the published Hyros API (v1.46, https://api-docs.hyros.com). The base URL is
+# https://api.hyros.com and the base path /api/v1.0.
+HYROS_PATHS = {
+    "ad_accounts": "/api/v1.0/ad-accounts",
+    "attribution": "/api/v1.0/attribution",
+    "ads": "/api/v1.0/ads",
+    "leads": "/api/v1.0/leads",
+    "sales": "/api/v1.0/sales",
+    "calls": "/api/v1.0/calls",
+}
 
 
 def _block(name):
@@ -84,7 +97,7 @@ def status(name):
     return {"name": name, "label": entry["label"], "kind": entry["kind"],
             "note": entry["note"], "docs": entry["docs"],
             "has_key": bool(str(block.get("api_key") or "").strip()),
-            "base_url": block.get("base_url") or entry.get("base_url") or "",
+            "base_url": _base_for(name, entry, block),
             "path": block.get("path") or "",
             "auth": entry.get("auth") or ("Bearer" if entry["kind"] == "api" else ""),
             "updated_ts": int(block.get("updated_ts") or 0),
@@ -97,11 +110,23 @@ def status_all():
     return [status(name) for name in PLATFORMS]
 
 
+def _base_for(name, entry, block):
+    """The base URL. Hyros answers on https://api.hyros.com/v1 + /api/v1.0/... (probed: the
+    same path without the /v1 is a Tomcat 404)."""
+    return str(block.get("base_url") or entry.get("base_url") or "").strip().rstrip("/")
+
+
+def api_key_of(name):
+    """The stored key, for the server's own use (never sent to the browser)."""
+    platform(name)
+    return str(_block(name).get("api_key") or "").strip()
+
+
 def _request(name, path=""):
     entry = platform(name)
     block = _block(name)
     key = str(block.get("api_key") or "").strip()
-    base = str(block.get("base_url") or entry.get("base_url") or "").strip().rstrip("/")
+    base = _base_for(name, entry, block)
     target = str(path or block.get("path") or "").strip()
     if not base:
         return {"ok": False, "error": "No base URL yet - paste the one from %s." % entry["docs"]}
@@ -160,3 +185,48 @@ def pull(name, path=""):
     if answer["ok"]:
         db.event("ads", "%s pulled %s" % (entry["label"], urllib.parse.urlsplit(answer["url"]).path))
     return {**answer, "platform": entry["label"]}
+
+
+# ------------------------------------------------------------------ HYROS, documented calls
+def rows_of(data):
+    """Hyros answers `{result: [...], request_id: ...}`; older callers get a bare list."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("result", "data", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def hyros_ad_accounts():
+    """GET /api/v1.0/ad-accounts - the IDs the attribution report needs."""
+    answer = pull("hyros", HYROS_PATHS["ad_accounts"])
+    if not answer["ok"]:
+        return answer
+    rows = rows_of(answer.get("data"))
+    return {"ok": True, "count": len(rows), "rows": rows[:200], "url": answer["url"],
+            "raw": answer.get("data") if not rows else None}
+
+
+def hyros_attribution(days=30, model="last_click", level="", ad_account_id=""):
+    """GET /api/v1.0/attribution - the ads report, last-click, for the last `days` days."""
+    import datetime
+    days = max(1, min(365, int(days or 30)))
+    today = datetime.date.today()
+    query = {"attributionModel": model,
+             "startDate": (today - datetime.timedelta(days=days)).isoformat(),
+             "endDate": today.isoformat(),
+             "fields": "sales,revenue,cost,roas"}
+    if level:
+        query["level"] = level
+    if ad_account_id:
+        query["adAccountId"] = ad_account_id
+    answer = pull("hyros", HYROS_PATHS["attribution"] + "?" + urllib.parse.urlencode(query))
+    if not answer["ok"]:
+        return answer
+    rows = rows_of(answer.get("data"))
+    return {"ok": True, "count": len(rows), "rows": rows[:200], "days": days,
+            "window": [query["startDate"], query["endDate"]],
+            "url": answer["url"], "raw": answer.get("data") if not rows else None}
