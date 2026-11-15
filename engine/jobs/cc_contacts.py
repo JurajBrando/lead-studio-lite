@@ -29,6 +29,7 @@ def run(ctx):
     per_domain = ctx.int_param("max_pages", 2)
     parallel = ctx.int_param("parallel", 24)
     source = (ctx.param("source") or "bucket").strip()
+    crawl = (ctx.param("crawl") or "").strip()
     local_dir = (ctx.param("path") or "").strip()
 
     rows = db.rows(
@@ -45,9 +46,10 @@ def run(ctx):
         from .cc_bulk import local_bands
         bands = local_bands(local_dir)
     else:
-        bands = cc_index.load_bands()
+        bands = cc_index.load_bands(crawl=crawl, source=source)
 
-    plan_rows = cc_fetch.plan(candidates, bands, local_dir, per_domain=per_domain)
+    plan_rows = cc_fetch.plan(candidates, bands, local_dir, per_domain=per_domain,
+                              source=source, crawl=crawl)
     if not plan_rows:
         return ctx.summary(checked=len(candidates), found=0, leads=0,
                            note="The index has no page for those domains.")
@@ -82,5 +84,5 @@ JOBS = [
         schedule="daily 09:30",
         needs_network=True,
         params={"limit": LIMIT, "max_pages": 2, "parallel": 24, "path": "",
-                "source": "bucket"}),
+                "source": "bucket", "crawl": ""}),
 ]

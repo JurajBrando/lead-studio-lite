@@ -13,6 +13,8 @@ LIMIT = 25
 def run(ctx):
     limit = ctx.int_param("limit", LIMIT)
     local_dir = (ctx.param("path") or "").strip()
+    source = (ctx.param("source") or "bucket").strip()
+    crawl = (ctx.param("crawl") or "").strip()
     domains = cc_index.pending(limit)
     if not domains:
         return ctx.summary(ok=True, checked=0, found=0,
@@ -22,8 +24,8 @@ def run(ctx):
         if local_dir:
             bands = local_bands(local_dir)
         else:
-            bands = cc_index.load_bands()
-        results = cc_index.match(domains, local_dir=local_dir, bands=bands)
+            bands = cc_index.load_bands(crawl=crawl, source=source)
+        results = cc_index.match(domains, local_dir=local_dir, bands=bands, source=source)
     except Exception as exc:                     # noqa: BLE001 - surfaced as a job error
         return {"ok": False, "error": "The index could not be read: %s" % exc}
     found = sum(1 for entry in results.values() if entry.get("found"))
@@ -61,5 +63,5 @@ JOBS = [
         run=run,
         schedule="daily 03:30",
         needs_network=True,
-        params={"limit": LIMIT, "path": ""}),
+        params={"limit": LIMIT, "path": "", "source": "bucket", "crawl": ""}),
 ]

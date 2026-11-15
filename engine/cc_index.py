@@ -26,6 +26,8 @@ import urllib.request
 from . import config, db
 
 REPO = "open-index/ccrawl-urls"
+BUCKET = "hf://buckets/commoncrawl/commoncrawl"
+BUCKET_INDEX = "cc-index/table/cc-main/warc"
 FIELDS = ("url_host_registered_domain", "fetch_time", "fetch_status")
 BATCH = 200000
 
@@ -41,6 +43,43 @@ def surtkey(domain):
     """`example.com` -> `com,example`, the order the index sorts a site's URLs in."""
     parts = [part.strip().lower() for part in str(domain or "").strip().split(".") if part.strip()]
     return ",".join(reversed(parts))
+
+
+def _fsspec():
+    import fsspec
+    return fsspec
+
+
+def bucket_crawls():
+    """The crawls Common Crawl mirrors in the Hugging Face bucket, newest last."""
+    fs = _fsspec().filesystem("hf")
+    base = "buckets/commoncrawl/commoncrawl/" + BUCKET_INDEX
+    names = []
+    for item in fs.ls(base, detail=True):
+        name = str(item.get("name") or "")
+        if item.get("type") != "directory" or "crawl=" not in name:
+            continue
+        names.append(name.split("crawl=")[-1])
+    return sorted(names)
+
+
+def bucket_shards(crawl=""):
+    """The URL index shards of one crawl in the bucket, as bucket-relative paths."""
+    fs = _fsspec().filesystem("hf")
+    crawls = [crawl] if crawl else bucket_crawls()[-1:]
+    if not crawls:
+        return []
+    paths = []
+    for name in crawls:
+        base = "buckets/commoncrawl/commoncrawl/%s/crawl=%s/subset=warc" % (BUCKET_INDEX, name)
+        try:
+            for item in fs.ls(base, detail=True):
+                path = str(item.get("name") or "")
+                if path.endswith(".parquet"):
+                    paths.append(path.replace("buckets/commoncrawl/commoncrawl/", ""))
+        except FileNotFoundError:
+            continue
+    return sorted(paths)
 
 
 def _request(url, timeout=40):
@@ -63,6 +102,24 @@ def _fs():
     return HfFileSystem()
 
 
+def _opener(source="bucket", repo=REPO, local_dir=""):
+    """A function path -> file handle, for the bucket, the dataset mirror or a local folder."""
+    if local_dir:
+        return lambda path: open(os.path.join(local_dir, os.path.basename(path)), "rb")
+    if source == "bucket":
+        filesystem = _fsspec().filesystem("hf")
+        return lambda path: filesystem.open(BUCKET + "/" + path.lstrip("/"), "rb")
+    return lambda path: _fs().open("datasets/%s/%s" % (repo, path), "rb")
+
+
+def _source_names(source, repo, crawl):
+    """(shards, cache key) for the chosen source."""
+    if source == "bucket":
+        name = "bucket:%s" % (crawl or (bucket_crawls() or [""])[-1])
+        return bucket_shards(crawl), name
+    return shards(repo, crawl), repo
+
+
 def _band_of(parquet, rows):
     index = parquet.schema_arrow.get_field_index("url_surtkey")
     stats = parquet.metadata.row_group(0).column(index).statistics
@@ -71,26 +128,31 @@ def _band_of(parquet, rows):
             "rows": rows}
 
 
-def load_bands(repo=REPO, crawl="", refresh=False, limit=0):
-    """Read every shard's footer once (a few KB each) and cache the band it covers."""
+def load_bands(repo=REPO, crawl="", refresh=False, limit=0, source="bucket"):
+    """Read every shard's footer once (a few KB each) and cache the band it covers.
+
+    Default is the official index in Common Crawl's Hugging Face bucket
+    (`cc-index/table/cc-main/warc/crawl=<crawl>/subset=warc/part-*.parquet`), which is the same
+    layout as the local `M:\\index` copy. `source="mirror"` reads `open-index/ccrawl-urls` instead.
+    """
     ensure_table()
-    cached = db.rows("SELECT * FROM cc_bands WHERE repo=?", (repo,))
+    paths, cache_key = _source_names(source, repo, crawl)
+    cached = db.rows("SELECT * FROM cc_bands WHERE repo=?", (cache_key,))
     if cached and not refresh:
         return cached
-    paths = shards(repo, crawl)
     if limit:
         paths = paths[:limit]
-    fs = _fs()
+    opener = _opener(source, repo)
     out = []
     for path in paths:
-        with fs.open("datasets/%s/%s" % (repo, path), "rb") as handle:
+        with opener(path) as handle:
             parquet = _pf(handle)
             band = _band_of(parquet, parquet.metadata.num_rows)
-        crawl_name = path.split("/")[-2] if path.count("/") > 1 else ""
+        crawl_name = path.split("crawl=")[-1].split("/")[0] if "crawl=" in path else ""
         db.execute("INSERT OR REPLACE INTO cc_bands (repo, path, key_low, key_high, rows, crawl) "
                    "VALUES (?,?,?,?,?,?)",
-                   (repo, path, band["key_low"], band["key_high"], band["rows"], crawl_name))
-        out.append({"repo": repo, "path": path, "crawl": crawl_name, **band})
+                   (cache_key, path, band["key_low"], band["key_high"], band["rows"], crawl_name))
+        out.append({"repo": cache_key, "path": path, "crawl": crawl_name, **band})
     return out
 
 
@@ -99,19 +161,33 @@ def _pf(handle):
     return pq.ParquetFile(handle)
 
 
+def _bound_domain(value):
+    """`com,blogspot,infidel753)/2006/11/upgrade.html` -> `com,blogspot,infidel753`."""
+    return str(value or "").split(")", 1)[0].split("/", 1)[0]
+
+
 def locate(key, bands):
-    """Shards whose band can contain `key` (a surtkey prefix like `com,example`)."""
+    """Shards whose band can contain `key` (a surtkey prefix like `com,example`).
+
+    A band's bounds are full sort keys (`com,blogspot,infidel753)/2006/...`), so the comparison
+    uses the domain part of each bound: otherwise a key that is a prefix of the bound - the
+    common case - would look "less than" the band's start and be missed.
+    """
     hits = []
     for band in bands:
         low, high = band.get("key_low") or "", band.get("key_high") or ""
         if not low and not high:
             hits.append(band)
-        elif low <= key <= high or low.startswith(key) or high.startswith(key):
+            continue
+        if _bound_domain(low) <= key <= _bound_domain(high):
+            hits.append(band)
+        elif low.startswith(key) or high.startswith(key):
             hits.append(band)
     return hits
 
 
-def match(domains, repo=REPO, crawl="", local_dir="", bands=None, limit_shards=0):
+def match(domains, repo=REPO, crawl="", local_dir="", bands=None, limit_shards=0,
+          source="bucket"):
     """{domain: pages, last capture, 200s} for the domains that appear in the index."""
     wanted = {}
     for domain in domains:
@@ -139,7 +215,7 @@ def match(domains, repo=REPO, crawl="", local_dir="", bands=None, limit_shards=0
         for path in sorted(glob.glob(os.path.join(local_dir, "*.parquet"))):
             plan[path] = set(wanted)
     else:
-        bands = load_bands(repo, crawl)
+        bands = load_bands(repo, crawl, source=source)
         for domain, key in wanted.items():
             for band in locate(key, bands):
                 plan.setdefault(band["path"], set()).add(domain)
@@ -189,7 +265,8 @@ def store(results):
     return written
 
 
-def plan_pages(domains, bands=None, repo=REPO, crawl="", local_dir="", per_domain=2, status=200):
+def plan_pages(domains, bands=None, repo=REPO, crawl="", local_dir="", per_domain=2, status=200,
+               source="bucket"):
     """Homepage + contact page for many domains, reading each shard **once**.
 
     The per-domain `pages()` re-opens a shard for every domain; a worklist builder groups the
@@ -216,15 +293,14 @@ def plan_pages(domains, bands=None, repo=REPO, crawl="", local_dir="", per_domai
                       for path in sorted(glob.glob(os.path.join(local_dir, "*.parquet")))}
     else:
         shard_plan = {}
-        for band in load_bands(repo, crawl):
+        for band in load_bands(repo, crawl, source=source):
             shard_plan.setdefault(band["path"], set())
         for domain in wanted:
-            for band in locate(surtkey(domain), bands or load_bands(repo, crawl)):
+            for band in locate(surtkey(domain), bands or load_bands(repo, crawl, source=source)):
                 shard_plan.setdefault(band["path"], set()).add(domain)
 
     found = {}
-    opener = (lambda path: open(path, "rb")) if local_dir else \
-        (lambda path: _fs().open("datasets/%s/%s" % (repo, path), "rb"))
+    opener = _opener(source, repo, local_dir)
     for path, names in shard_plan.items():
         if not names:
             continue
@@ -275,7 +351,8 @@ PAGE_FIELDS = ("url", "url_host_registered_domain", "fetch_time", "fetch_status"
                "warc_filename", "warc_record_offset", "warc_record_length")
 
 
-def pages(domain, bands=None, repo=REPO, crawl="", local_dir="", max_pages=6, status=200):
+def pages(domain, bands=None, repo=REPO, crawl="", local_dir="", max_pages=6, status=200,
+          source="bucket"):
     """The archived pages of one domain, with the WARC coordinates to fetch each one.
 
     Contact/about pages come first, then the homepage, then whatever is left - a domain usually
@@ -295,11 +372,10 @@ def pages(domain, bands=None, repo=REPO, crawl="", local_dir="", max_pages=6, st
     elif local_dir:
         plan = sorted(glob.glob(os.path.join(local_dir, "*.parquet")))
     else:
-        plan = [band["path"] for band in locate(key, load_bands(repo, crawl))]
+        plan = [band["path"] for band in locate(key, load_bands(repo, crawl, source=source))]
 
     found = []
-    opener = (lambda path: open(path, "rb")) if local_dir else \
-        (lambda path: _fs().open("datasets/%s/%s" % (repo, path), "rb"))
+    opener = _opener(source, repo, local_dir)
     for path in plan:
         with opener(path) as handle:
             parquet = _pf(handle)

@@ -1,3 +1,37 @@
+## [1.28.0] - 2026-11-15
+
+The official Common Crawl index in the Hugging Face bucket is now the default.
+
+### Changed
+
+- **`cc_index` reads Common Crawl's own index from the bucket**:
+  `hf://buckets/commoncrawl/commoncrawl/cc-index/table/cc-main/warc/crawl=<crawl>/subset=warc/part-*.parquet`.
+  The bucket currently carries seven crawls — `CC-MAIN-2026-17 … CC-MAIN-2026-43` — and the
+  `CC-MAIN-2026-43` shards are **the same 300 files, same UUID (`6e44f0dc…`), as the local
+  `M:\index` copy**, so the two are interchangeable.
+- `source="bucket"` (default), `"mirror"` (`open-index/ccrawl-urls` on the Hub, kept) or a local
+  folder via `path`. A `crawl` parameter picks the archive; empty means the newest.
+- Both Domains jobs (bulk index match, contacts from the archive) default to `source=bucket` and
+  accept `crawl`.
+
+### Fixed
+
+- **`locate()`** compared a bare surtkey (`com,example`) against full bounds
+  (`com,blogspot,infidel753)/2006/…`), so a key that is a *prefix* of the band's first row was
+  judged smaller than the band and skipped. The comparison now uses the domain part of each bound.
+  This is the fix that makes a band lookup actually find the shard.
+
+### Measured
+
+- Listing the crawls takes ~2 s, the 300 shard names ~0.2 s, three footers ~1.7 s.
+- Scanning one shard **from the bucket** is slow — 493 s for a full 6.6M-row pass — against ~25 s
+  from the local `M:\index`. The bucket is for spot checks and for planning; a bulk run should
+  point `path` at the local copy.
+
+### Tests
+
+446 (unchanged): the index tests run against a local shard, so they cover the same code either way.
+
 ## [1.27.0] - 2026-11-15
 
 Batched archive fetching, and the Hugging Face bucket as the fast source.
