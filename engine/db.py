@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import time
 
-from . import config
+from . import config, net
 
 # The leads table is defined from one list so a migration can rebuild it from the same
 # source of truth. `email` is optional: a contact can be a company row with a description
@@ -25,6 +25,8 @@ LEAD_COLUMNS = [
     ("city", "TEXT DEFAULT ''"),
     ("country", "TEXT DEFAULT ''"),
     ("industry", "TEXT DEFAULT ''"),
+    ("company_size", "TEXT DEFAULT ''"),
+    ("technologies", "TEXT DEFAULT ''"),
     ("description", "TEXT DEFAULT ''"),
     ("linkedin", "TEXT DEFAULT ''"),
     ("website", "TEXT DEFAULT ''"),
@@ -309,6 +311,9 @@ def conn():
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA foreign_keys=ON")
+        # One SQL function for country names, so filtering and the facet list agree even
+        # for the rows imported before the names were normalised.
+        c.create_function("norm_country", 1, net.normalise_country, deterministic=True)
         _local.c = c
     return c
 
@@ -375,7 +380,9 @@ def _migrate(c):
     additions = {
         "offers": [("disclosure", "TEXT DEFAULT ''")],
         "sends": [("attempts", "INTEGER DEFAULT 0")],
-        "leads": [("description", "TEXT DEFAULT ''")],
+        "leads": [("description", "TEXT DEFAULT ''"),
+                  ("company_size", "TEXT DEFAULT ''"),
+                  ("technologies", "TEXT DEFAULT ''")],
         "mailboxes": [("auth_type", "TEXT DEFAULT 'password'"),
                       ("oauth_provider", "TEXT DEFAULT ''"),
                       ("oauth_refresh", "TEXT DEFAULT ''"),

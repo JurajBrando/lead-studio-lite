@@ -17,6 +17,46 @@ UA_CONTACT = ""          # filled from settings.contact_email at start-up
 _offline = False
 
 
+# Country names arrive from a dozen different sources: "US", "USA", "united states",
+# "United States of America". One canonical value keeps the country filter and its facet
+# list from splitting a single country into five entries.
+COUNTRY_ALIASES = {
+    "us": "United States", "usa": "United States", "u.s.": "United States",
+    "u.s.a.": "United States", "united states": "United States",
+    "united states of america": "United States", "america": "United States",
+    "uk": "United Kingdom", "u.k.": "United Kingdom", "gb": "United Kingdom",
+    "great britain": "United Kingdom", "united kingdom": "United Kingdom",
+    "england": "United Kingdom", "scotland": "United Kingdom", "wales": "United Kingdom",
+    "de": "Germany", "germany": "Germany", "deutschland": "Germany",
+    "at": "Austria", "austria": "Austria", "osterreich": "Austria", "österreich": "Austria",
+    "sk": "Slovakia", "slovakia": "Slovakia", "slovak republic": "Slovakia",
+    "slovensko": "Slovakia", "slovenská republika": "Slovakia",
+    "cz": "Czechia", "czech republic": "Czechia", "czechia": "Czechia", "česko": "Czechia",
+    "fr": "France", "france": "France",
+    "es": "Spain", "spain": "Spain", "espana": "Spain", "españa": "Spain",
+    "it": "Italy", "italy": "Italy", "italia": "Italy",
+    "nl": "Netherlands", "netherlands": "Netherlands", "the netherlands": "Netherlands",
+    "holland": "Netherlands",
+    "pl": "Poland", "poland": "Poland", "polska": "Poland",
+    "hu": "Hungary", "hungary": "Hungary", "magyarorszag": "Hungary",
+    "ro": "Romania", "romania": "Romania",
+    "ca": "Canada", "canada": "Canada",
+    "au": "Australia", "australia": "Australia",
+    "in": "India", "india": "India",
+    "ie": "Ireland", "ireland": "Ireland",
+    "pt": "Portugal", "portugal": "Portugal",
+    "ch": "Switzerland", "switzerland": "Switzerland", "schweiz": "Switzerland",
+}
+
+
+def normalise_country(value):
+    """'USA' / ' united states ' / 'United States of America' -> 'United States'."""
+    text = " ".join(str(value or "").replace("\u00a0", " ").split())
+    if not text:
+        return ""
+    return COUNTRY_ALIASES.get(text.lower(), text)
+
+
 class NetError(Exception):
     def __init__(self, message, status=0, url=""):
         super().__init__(message)

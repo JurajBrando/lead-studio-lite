@@ -105,30 +105,103 @@ def r_state():
             "oauth": oauth.status()}
 
 
+LEAD_SORTS = {
+    "newest": "id DESC",
+    "company": "lower(company) ASC, id DESC",
+    "country": "lower(country) ASC, lower(company) ASC, id DESC",
+    "title": "lower(title) ASC, id DESC",
+    "size": "company_size ASC, lower(company) ASC, id DESC",
+}
+
+
+def _terms(value):
+    """'a, b; c' -> ['a', 'b', 'c'] - one list for every multi-value filter."""
+    raw = str(value or "").replace(";", ",")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _any_like(column, terms):
+    clause = "(" + " OR ".join("lower(%s) LIKE ?" % column for _ in terms) + ")"
+    return clause, ["%%%s%%" % term.lower() for term in terms]
+
+
 def r_leads(q=""):
     page = max(1, int(q.get("page", 1) or 1))
     per = min(200, max(10, int(q.get("per", 50) or 50)))
     search = (q.get("q") or "").strip()
     status = (q.get("status") or "").strip()
+    sort = (q.get("sort") or "newest").strip()
+    country = _terms(q.get("country"))
+    title = (q.get("title") or "").strip()
+    industry = _terms(q.get("industry"))
+    must = _terms(q.get("must_industry"))
+    size = (q.get("company_size") or "").strip()
+    location = (q.get("location") or "").strip()
+    technologies = _terms(q.get("technologies"))
+    source = (q.get("source") or "").strip()
+
     where, args = [], []
     if search:
-        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ? OR domain LIKE ?)")
-        like = "%%%s%%" % search
-        args.extend([like] * 5)
+        where.append("(email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ? "
+                     "OR domain LIKE ? OR title LIKE ? OR description LIKE ? OR notes LIKE ?)")
+        args.extend(["%%%s%%" % search] * 8)
     if status:
         where.append("status=?")
         args.append(status)
+    if country:
+        # A country comes from the facet list and is compared through norm_country, so
+        # "US" and "United States" land in the same bucket - and "US" does not also pull
+        # in Australia, Belarus or Cyprus.
+        where.append("(" + " OR ".join("norm_country(country)=norm_country(?)"
+                                       for _ in country) + ")")
+        args += country
+    if title:
+        where.append("lower(title) LIKE ?")
+        args.append("%%%s%%" % title.lower())
+    if industry:
+        clause, values = _any_like("industry", industry)
+        where.append(clause)
+        args += values
+    for term in must:                       # must-have: every term has to be present
+        where.append("lower(industry) LIKE ?")
+        args.append("%%%s%%" % term.lower())
+    if size == "unknown":
+        where.append("coalesce(company_size,'')=''")
+    elif size:
+        where.append("company_size=?")
+        args.append(size)
+    if location:
+        where.append("(lower(city) LIKE ? OR lower(country) LIKE ?)")
+        args.extend(["%%%s%%" % location.lower()] * 2)
+    if technologies:
+        clause, values = _any_like("technologies", technologies)
+        where.append(clause)
+        args += values
+    if source:
+        where.append("source=?")
+        args.append(source)
+
     clause = (" WHERE " + " AND ".join(where)) if where else ""
+    order = LEAD_SORTS.get(sort, LEAD_SORTS["newest"])
     total = db.scalar("SELECT COUNT(*) FROM leads" + clause, tuple(args))
-    items = db.rows("SELECT * FROM leads" + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
-                    tuple(args) + (per, (page - 1) * per))
+    items = db.rows("SELECT * FROM leads" + clause + " ORDER BY " + order +
+                    " LIMIT ? OFFSET ?", tuple(args) + (per, (page - 1) * per))
     return {"ok": True, "leads": items, "total": total, "page": page, "per": per,
-            "pages": max(1, (total + per - 1) // per)}
+            "pages": max(1, (total + per - 1) // per),
+            "facets": {
+                "countries": [r["country"] for r in db.rows(
+                    "SELECT norm_country(country) AS country, COUNT(*) n FROM leads "
+                    "WHERE trim(coalesce(country,''))<>'' GROUP BY 1 ORDER BY n DESC LIMIT 80")],
+                "sources": [r["source"] for r in db.rows(
+                    "SELECT source, COUNT(*) n FROM leads WHERE trim(source)<>'' "
+                    "GROUP BY source ORDER BY n DESC LIMIT 40")],
+                "sizes": list(importer.SIZE_BUCKETS),
+            }}
 
 
 LEAD_FIELDS = ("email", "first_name", "last_name", "company", "title", "domain", "description",
-               "phone", "city", "country", "industry", "linkedin", "website", "notes", "tags",
-               "source", "status")
+               "phone", "city", "country", "industry", "company_size", "technologies",
+               "linkedin", "website", "notes", "tags", "source", "status")
 
 
 def r_lead_save(p):
@@ -159,6 +232,8 @@ def r_lead_save(p):
                 "error": "Give the lead an email, a company, a domain, a LinkedIn URL or a name."}
     email = (merged.get("email") or "").strip().lower()
     fields["email"] = email
+    if fields.get("country"):
+        fields["country"] = net.normalise_country(fields["country"])
     email_changed = bool(current) and email != (current.get("email") or "").lower()
     # Follow the address when it changes (or when the caller cleared the domain), but never
     # overwrite a domain the user typed by hand.

@@ -10,7 +10,7 @@ import io
 import os
 import re
 
-from . import db, mail
+from . import db, mail, net
 
 # Any of these column names maps onto the app's field of the same target.
 ALIASES = {
@@ -34,6 +34,11 @@ ALIASES = {
     "city": ["city", "town", "locality", "mesto"],
     "country": ["country", "krajina", "nation"],
     "industry": ["industry", "vertical", "sector", "segment", "category", "odvetvie"],
+    "company_size": ["company_size", "company size", "size", "employees", "employee_count",
+                     "employees_count", "headcount", "staff", "company_size_range",
+                     "number_of_employees", "velkost"],
+    "technologies": ["technologies", "technology", "tech", "tech_stack", "techstack",
+                     "technologies_used"],
     "linkedin": ["linkedin", "linkedin_url", "linkedin_profile", "li_url"],
     "notes": ["notes", "note", "comment", "comments", "remark", "poznamka"],
     "tags": ["tags", "tag", "labels", "list"],
@@ -41,7 +46,40 @@ ALIASES = {
 }
 
 FIELD_ORDER = ["email", "first_name", "last_name", "company", "title", "domain", "description",
-               "phone", "city", "country", "industry", "linkedin", "notes", "tags", "source"]
+               "phone", "city", "country", "industry", "company_size", "technologies",
+               "linkedin", "notes", "tags", "source"]
+
+# Company size is stored as one of these, so a "51-200" filter means the same thing for
+# every row, whatever the source file called it ("120", "51 - 200", "1,000+"...).
+SIZE_BUCKETS = ("1-10", "11-50", "51-200", "201-500", "501-1000", "1000+")
+
+
+def size_bucket(value):
+    """'120' / '51-200' / '1,000+' -> one of SIZE_BUCKETS."""
+    text = _cell(value).strip().lower().replace("–", "-").replace("—", "-").replace(" ", "")
+    text = text.replace(",", "")
+    if not text:
+        return ""
+    for bucket in SIZE_BUCKETS:
+        if text == bucket:
+            return bucket
+    match = re.match(r"^(\d+)", text)
+    if not match:
+        return ""
+    number = int(match.group(1))
+    if text.endswith("+") and number >= 1000:
+        return "1000+"
+    if number <= 10:
+        return "1-10"
+    if number <= 50:
+        return "11-50"
+    if number <= 200:
+        return "51-200"
+    if number <= 500:
+        return "201-500"
+    if number <= 1000:
+        return "501-1000"
+    return "1000+"
 
 # A row with none of these cannot be told apart from the next one.
 IDENTITY_FIELDS = ("email", "company", "domain", "linkedin", "name", "first_name", "last_name")
@@ -637,6 +675,10 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
                 data.setdefault("last_name", lname)
         if data.get("domain"):
             data["domain"] = clean_domain(data["domain"]) or data["domain"]
+        if data.get("company_size"):
+            data["company_size"] = size_bucket(data["company_size"])
+        if data.get("country"):
+            data["country"] = net.normalise_country(data["country"])
         if not data.get("domain") and email:
             data["domain"] = email.rsplit("@", 1)[-1]
 
@@ -700,9 +742,9 @@ def import_data(name, raw, source="import", update_existing=False, mark_status="
 
 
 EXPORT_COLS = ["email", "first_name", "last_name", "company", "title", "domain", "description",
-               "phone", "city", "country", "industry", "linkedin", "website", "status",
-               "verify_status", "tags", "source", "notes", "created_ts", "last_contact_ts",
-               "replied_ts"]
+               "phone", "city", "country", "industry", "company_size", "technologies",
+               "linkedin", "website", "status", "verify_status", "tags", "source", "notes",
+               "created_ts", "last_contact_ts", "replied_ts"]
 
 
 def lead_records(status="", search=""):

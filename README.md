@@ -43,6 +43,10 @@ built-in data enrichment.
   scrape the site for contact details and add what it finds as a lead. The weekly Common Crawl
   job also feeds it from the CC host index, and **Import lead domains** pulls the domain of every
   lead you already have — with an email or with only a domain.
+- **Segment the list** — filter leads by **country, job title, industries** (any of, or must-have
+  all of), **company size, location, technologies and source**, then sort by company, country,
+  job title or size. Country names are normalised on import and at query time, so `US`, `USA` and
+  `United States of America` are one country.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks

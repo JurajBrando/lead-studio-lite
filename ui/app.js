@@ -6,7 +6,10 @@
   var state = {
     data: null,
     view: 'dashboard',
-    leads: { items: [], total: 0, page: 1, pages: 1, q: '', status: '' },
+    leads: { items: [], total: 0, page: 1, pages: 1, q: '', status: '',
+             filters: { sort: 'newest', country: '', title: '', industry: '', must_industry: '',
+                        company_size: '', location: '', technologies: '', source: '' },
+             facets: null, showFilters: false },
     selection: new Set(),
     inboxFilter: 'all',
     signalKind: '',
@@ -140,16 +143,50 @@
     });
   }
 
+  var LEAD_FILTER_KEYS = ['country', 'title', 'industry', 'must_industry', 'company_size',
+                          'location', 'technologies', 'source'];
+  var LEAD_SORTS = [
+    { key: 'newest', label: 'Newest first' },
+    { key: 'company', label: 'Company A-Z' },
+    { key: 'country', label: 'Country A-Z' },
+    { key: 'title', label: 'Job title A-Z' },
+    { key: 'size', label: 'Company size' }
+  ];
+
+  function leadFilterBadge() {
+    var button = $('#lead-filter-toggle');
+    if (!button) return;
+    var active = LEAD_FILTER_KEYS.filter(function (key) { return state.leads.filters[key]; }).length;
+    button.textContent = 'Filters' + (active ? ' (' + active + ')' : '');
+    button.classList.toggle('primary', active > 0);
+  }
+
   function loadLeads() {
     var q = state.leads;
-    var qs = '?page=' + q.page + '&per=50&q=' + encodeURIComponent(q.q) + '&status=' + encodeURIComponent(q.status);
+    var f = q.filters || {};
+    var qs = '?page=' + q.page + '&per=50&q=' + encodeURIComponent(q.q) +
+      '&status=' + encodeURIComponent(q.status) + '&sort=' + encodeURIComponent(f.sort || 'newest');
+    LEAD_FILTER_KEYS.forEach(function (key) {
+      if (f[key]) qs += '&' + key + '=' + encodeURIComponent(f[key]);
+    });
     return call('/api/leads' + qs).then(function (res) {
       if (res.ok) {
         state.leads.items = res.leads;
         state.leads.total = res.total;
         state.leads.pages = res.pages;
+        state.leads.facets = res.facets || state.leads.facets;
+        var totalEl = $('#lead-total');
+        if (totalEl) totalEl.textContent = num(res.total) + ' contacts in this workspace.';
+        leadFilterBadge();
       }
-      if (state.view === 'leads') render();
+      if (state.view !== 'leads') return;
+      var box = $('#lead-table');
+      if (box) {
+        box.innerHTML = leadsTableHtml();
+        wireLeadTable();
+      } else {
+        render();
+      }
     });
   }
 
@@ -362,9 +399,55 @@
   }
 
   // ---- leads
+  function leadFilterOptions(items, current, anyLabel) {
+    return '<option value="">' + h(anyLabel) + '</option>' + (items || []).map(function (value) {
+      return '<option value="' + h(value) + '"' + (value === current ? ' selected' : '') + '>' +
+        h(value) + '</option>';
+    }).join('');
+  }
+
+  function leadFilterField(label, id, value, placeholder) {
+    return '<div class="field"><label>' + h(label) + '</label>' +
+      '<input type="text" id="' + id + '" value="' + h(value || '') + '" placeholder="' +
+      h(placeholder || '') + '"></div>';
+  }
+
+  function leadFilterPanel(facets, f) {
+    var sizes = (facets.sizes || []).map(function (value) {
+      return '<option value="' + h(value) + '"' + (f.company_size === value ? ' selected' : '') +
+        '>' + h(value) + '</option>';
+    }).join('');
+    return '<div class="sep"></div><div class="grid cols-4" style="gap:12px">' +
+      '<div class="field"><label>Country</label><select id="f-country">' +
+      leadFilterOptions(facets.countries, f.country, 'Any country') + '</select></div>' +
+      '<div class="field"><label>Source</label><select id="f-source">' +
+      leadFilterOptions(facets.sources, f.source, 'Any source') + '</select></div>' +
+      '<div class="field"><label>Company size</label><select id="f-size">' +
+      '<option value="">Any size</option>' + sizes +
+      '<option value="unknown"' + (f.company_size === 'unknown' ? ' selected' : '') +
+      '>unknown</option></select></div>' +
+      leadFilterField('Location (city or country)', 'f-location', f.location,
+                      'e.g. Bratislava') +
+      leadFilterField('Job title', 'f-title', f.title, 'e.g. marketing') +
+      leadFilterField('Industries - any of', 'f-industry', f.industry,
+                      'e.g. saas, manufacturing') +
+      leadFilterField('Must have industries - all of', 'f-must', f.must_industry,
+                      'e.g. manufacturing') +
+      leadFilterField('Technologies - any of', 'f-tech', f.technologies,
+                      'e.g. shopify, wordpress') +
+      '</div>' +
+      '<div class="toolbar" style="margin:12px 0 0"><span class="small dim">Filters apply as you ' +
+      'type. A comma separates several values.</span><div class="spacer" style="flex:1"></div>' +
+      '<button class="btn sm ghost" data-act="lead-clear">Clear filters</button></div>';
+  }
+
   function viewLeads(d) {
     var q = state.leads;
-    var html = pageHead('Leads', num(q.total) + ' contacts in this workspace.',
+    var f = q.filters || {};
+    var facets = q.facets || { countries: [], sources: [], sizes: [] };
+    var active = LEAD_FILTER_KEYS.filter(function (key) { return f[key]; }).length;
+    var html = pageHead('Leads',
+      '<span id="lead-total">' + num(q.total) + ' contacts in this workspace.</span>',
       '<button class="btn" data-act="export">CSV</button>' +
       '<button class="btn" data-act="export-parquet">Parquet</button>' +
       '<button class="btn" data-act="export-duckdb">DuckDB</button>' +
@@ -374,26 +457,37 @@
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
       '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
-      '<input type="search" id="lead-search" placeholder="Search name, company, email or description" value="' + h(q.q) + '">' +
-      '</div>' +
-      '<select id="lead-status" style="max-width:170px">' +
+      '<input type="search" id="lead-search" placeholder="Search name, company, email or description" value="' +
+      h(q.q) + '"></div>' +
+      '<select id="lead-status" style="max-width:150px">' +
       ['', 'new', 'contacted', 'replied', 'interested', 'won', 'lost', 'bounced', 'unsubscribed']
         .map(function (s) {
           return '<option value="' + s + '"' + (q.status === s ? ' selected' : '') + '>' +
             (s ? s[0].toUpperCase() + s.slice(1) : 'All statuses') + '</option>';
         }).join('') + '</select>' +
+      '<select id="lead-sort" style="max-width:160px">' + LEAD_SORTS.map(function (sort) {
+        return '<option value="' + sort.key + '"' +
+          ((f.sort || 'newest') === sort.key ? ' selected' : '') + '>' + h(sort.label) +
+          '</option>';
+      }).join('') + '</select>' +
+      '<button class="btn sm' + (active ? ' primary' : '') + '" id="lead-filter-toggle">Filters' +
+      (active ? ' (' + active + ')' : '') + '</button>' +
       '<button class="btn sm" data-act="verify">Verify emails</button>' +
-      '</div></div>';
+      '</div>' + (q.showFilters ? leadFilterPanel(facets, f) : '') + '</div>';
 
+    html += '<div id="lead-table" class="mt"></div>';
+    return html;
+  }
+
+  function leadsTableHtml() {
+    var q = state.leads;
     if (!q.items.length) {
-      html += '<div class="card mt"><div class="empty"><div class="big">No leads here yet</div>' +
-        '<p>Drop a CSV in and Lead Studio maps the columns automatically. An email is welcome ' +
-        'but not required: a company with a description is a contact too.</p>' +
-        '<button class="btn primary" data-act="import">Import a file</button></div></div>';
-      return html;
+      return '<div class="card"><div class="empty"><div class="big">No leads match</div>' +
+        '<p>Nothing under these filters. Clear them, or import a file - an email is welcome but ' +
+        'not required.</p><button class="btn primary" data-act="import">Import a file</button> ' +
+        '<button class="btn" data-act="lead-clear">Clear filters</button></div></div>';
     }
-
-    html += '<div class="card tight mt" style="padding:0">' +
+    var html = '<div class="card tight" style="padding:0">' +
       '<div class="toolbar" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--line)">' +
       '<label class="check"><input type="checkbox" id="sel-all"> Select page</label>' +
       '<span class="small dim" id="sel-count">' + state.selection.size + ' selected</span>' +
@@ -401,8 +495,8 @@
       '<button class="btn sm" data-act="enroll-sel">Enroll selected</button>' +
       '<button class="btn sm danger" data-act="delete-sel">Delete</button>' +
       '</div><div class="table-wrap"><table><thead><tr>' +
-      '<th style="width:30px"></th><th>Lead</th><th>Company</th><th>Status</th><th>Verified</th>' +
-      '<th>Last contact</th><th></th></tr></thead><tbody>' +
+      '<th style="width:30px"></th><th>Lead</th><th>Company</th><th>Industry</th><th>Size</th>' +
+      '<th>Status</th><th>Verified</th><th>Last contact</th><th></th></tr></thead><tbody>' +
       q.items.map(function (l) {
         return '<tr data-lead="' + l.id + '">' +
           '<td><input type="checkbox" class="row-sel" data-id="' + l.id + '"' +
@@ -414,44 +508,28 @@
           '<td>' + (l.email
             ? '<div>' + h(l.company || '—') + '</div><div class="t-sub">' +
               h([l.title, l.city].filter(Boolean).join(' · ') || l.domain || '') + '</div>'
-            : '<div class="small">' + h((l.description || '—').slice(0, 90)) + '</div>' +
+            : '<div class="small">' + h((l.description || '—').slice(0, 80)) + '</div>' +
               '<div class="t-sub">' + h(l.domain || '') + '</div>') + '</td>' +
+          '<td class="small">' + h((l.industry || '—').slice(0, 70)) + '</td>' +
+          '<td class="small dim nowrap">' + h(l.company_size || '—') + '</td>' +
           '<td>' + statusBadge(l.status) + '</td>' +
           '<td>' + verifyBadge(l.verify_status) + '</td>' +
           '<td class="small dim nowrap">' + fmtDate(l.last_contact_ts) + '</td>' +
-          '<td class="right nowrap"><button class="btn sm ghost" data-edit="' + l.id + '">Edit</button></td>' +
-          '</tr>';
+          '<td class="right nowrap"><button class="btn sm ghost" data-edit="' + l.id +
+          '">Edit</button></td></tr>';
       }).join('') + '</tbody></table></div></div>';
 
-    html += '<div class="toolbar mt"><span class="small dim">Page ' + q.page + ' of ' + q.pages + '</span>' +
+    html += '<div class="toolbar mt"><span class="small dim">Page ' + q.page + ' of ' + q.pages +
+      ' · ' + num(q.total) + ' matching</span>' +
       '<div class="spacer" style="flex:1"></div>' +
-      '<button class="btn sm" data-page="prev"' + (q.page <= 1 ? ' disabled' : '') + '>Previous</button>' +
-      '<button class="btn sm" data-page="next"' + (q.page >= q.pages ? ' disabled' : '') + '>Next</button></div>';
-
+      '<button class="btn sm" data-page="prev"' + (q.page <= 1 ? ' disabled' : '') +
+      '>Previous</button>' +
+      '<button class="btn sm" data-page="next"' + (q.page >= q.pages ? ' disabled' : '') +
+      '>Next</button></div>';
     return html;
   }
 
-  function wireLeads() {
-    var search = $('#lead-search');
-    if (search) {
-      var t;
-      search.oninput = function () {
-        clearTimeout(t);
-        t = setTimeout(function () {
-          state.leads.q = search.value;
-          state.leads.page = 1;
-          state.selection.clear();   // ticks on rows that are no longer listed must not act on them
-          loadLeads();
-        }, 260);
-      };
-    }
-    var sel = $('#lead-status');
-    if (sel) sel.onchange = function () {
-      state.leads.status = sel.value;
-      state.leads.page = 1;
-      state.selection.clear();
-      loadLeads();
-    };
+  function wireLeadTable() {
     var all = $('#sel-all');
     if (all) all.onchange = function () {
       state.leads.items.forEach(function (l) {
@@ -463,21 +541,80 @@
       cb.onchange = function () {
         var id = Number(cb.dataset.id);
         if (cb.checked) state.selection.add(id); else state.selection.delete(id);
-        var c = $('#sel-count');
-        if (c) c.textContent = state.selection.size + ' selected';
+        var counter = $('#sel-count');
+        if (counter) counter.textContent = state.selection.size + ' selected';
       };
     });
-    $$('[data-edit]').forEach(function (b) {
-      b.onclick = function () { editLead(Number(b.dataset.edit)); };
+    $$('[data-edit]').forEach(function (button) {
+      button.onclick = function () { editLead(Number(button.dataset.edit)); };
     });
-    $$('[data-page]').forEach(function (b) {
-      b.onclick = function () {
-        state.leads.page += b.dataset.page === 'next' ? 1 : -1;
+    $$('[data-page]').forEach(function (button) {
+      button.onclick = function () {
+        state.leads.page += button.dataset.page === 'next' ? 1 : -1;
         state.selection.clear();
         loadLeads();
       };
     });
+  }
 
+  function wireLeads() {
+    var q = state.leads;
+    var search = $('#lead-search');
+    if (search) {
+      var timer;
+      search.oninput = function () {
+        clearTimeout(timer);
+        timer = setTimeout(function () {
+          q.q = search.value;
+          q.page = 1;
+          state.selection.clear();   // ticks on rows that are no longer listed must not act on them
+          loadLeads();
+        }, 260);
+      };
+    }
+    var status = $('#lead-status');
+    if (status) status.onchange = function () {
+      q.status = status.value;
+      q.page = 1;
+      state.selection.clear();
+      loadLeads();
+    };
+    var sort = $('#lead-sort');
+    if (sort) sort.onchange = function () {
+      q.filters.sort = sort.value;
+      q.page = 1;
+      loadLeads();
+    };
+    var toggle = $('#lead-filter-toggle');
+    if (toggle) toggle.onclick = function () {
+      q.showFilters = !q.showFilters;
+      render();
+    };
+    var fields = {
+      'f-country': 'country', 'f-source': 'source', 'f-size': 'company_size',
+      'f-location': 'location', 'f-title': 'title', 'f-industry': 'industry',
+      'f-must': 'must_industry', 'f-tech': 'technologies'
+    };
+    Object.keys(fields).forEach(function (id) {
+      var el = $('#' + id);
+      if (!el) return;
+      var key = fields[id];
+      var apply = function () {
+        q.filters[key] = el.value;
+        q.page = 1;
+        loadLeads();
+      };
+      if (el.tagName === 'SELECT') {
+        el.onchange = apply;
+      } else {
+        var timer;
+        el.oninput = function () {
+          clearTimeout(timer);
+          timer = setTimeout(apply, 400);
+        };
+      }
+    });
+    wireLeadTable();
   }
 
   // ---- domains
@@ -1919,6 +2056,18 @@
     },
     import: function () { importModal(); },
     'bulk-data': function () { bulkDataModal(); },
+    'lead-apply': function () { state.leads.page = 1; loadLeads(); },
+    'lead-clear': function () {
+      var q = state.leads;
+      LEAD_FILTER_KEYS.forEach(function (key) { q.filters[key] = ''; });
+      q.filters.sort = 'newest';
+      q.q = '';
+      q.status = '';
+      q.page = 1;
+      state.selection.clear();
+      render();
+      loadLeads();
+    },
     'domain-refresh': function () { loadDomains(); },
     'domain-sync': function (el) {
       if (el) el.disabled = true;
@@ -2226,6 +2375,14 @@
         '<input type="text" id="lf-phone" value="' + h(f.phone || '') + '"></div>' +
         '<div class="field"><label>Industry</label>' +
         '<input type="text" id="lf-industry" value="' + h(f.industry || '') + '" placeholder="accounting"></div></div>' +
+        '<div class="row"><div class="field"><label>Company size</label><select id="lf-size">' +
+        ['', '1-10', '11-50', '51-200', '201-500', '501-1000', '1000+'].map(function (size) {
+          return '<option value="' + size + '"' + (f.company_size === size ? ' selected' : '') +
+            '>' + (size || '- unknown -') + '</option>';
+        }).join('') + '</select></div>' +
+        '<div class="field"><label>Technologies <span class="dim">(comma separated)</span></label>' +
+        '<input type="text" id="lf-tech" value="' + h(f.technologies || '') +
+        '" placeholder="shopify, klaviyo"></div></div>' +
         '<div class="row"><div class="field"><label>LinkedIn</label>' +
         '<input type="text" id="lf-linkedin" value="' + h(f.linkedin || '') + '"></div>' +
         '<div class="field"><label>Tags</label>' +
@@ -2252,6 +2409,8 @@
             country: $('#lf-country', root).value,
             phone: $('#lf-phone', root).value,
             industry: $('#lf-industry', root).value,
+            company_size: $('#lf-size', root).value,
+            technologies: $('#lf-tech', root).value,
             linkedin: $('#lf-linkedin', root).value,
             tags: $('#lf-tags', root).value,
             description: $('#lf-description', root).value,

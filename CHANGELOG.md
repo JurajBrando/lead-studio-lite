@@ -1,3 +1,32 @@
+## [1.12.0] - 2026-11-15
+
+Lead filters: country, job title, industries (any of, or must-have), company size, location,
+technologies and source.
+
+### Added
+
+- **A filter panel on the Leads page** (the *Filters* button): country and source from the data
+  itself, company size from six buckets, and free text for job title, location, industries,
+  must-have industries and technologies. Filters apply as you type, the button shows how many are
+  active, and *Clear filters* resets everything.
+- **`company_size` and `technologies` on a lead**: imported from `size`, `employees`, `headcount`
+  and `technologies`, `tech_stack`, `tech`; company size is folded into `1-10`, `11-50`,
+  `51-200`, `201-500`, `501-1000`, `1000+` so "120" and "51-200" mean the same thing. Both are in
+  the lead form, the table, the search and every export.
+- **Country normalisation**: about twenty alias groups (`US`, `USA`, `united states`,
+  `United States of America` → United States; `UK`, `England` → United Kingdom; `Slovensko` →
+  Slovakia …). Applied on import and on save, and compared through a SQL function at query time,
+  so rows imported before this change are grouped and filtered correctly without being rewritten.
+- **Sorting** by newest, company, country, job title or company size.
+- The table gained Industry and Size columns, and the header total plus the filter badge update
+  in place, so typing in a filter never re-renders the panel under the cursor.
+
+### Tests
+
+325 (was 307): the size buckets, every filter, must-have being AND, the sort orders, the facet
+lists, country folding (including the query against existing variants), and an import filling
+size and technologies.
+
 ## [1.11.1] - 2026-11-15
 
 Every lead's domain now reaches the catalogue.
