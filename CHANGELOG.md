@@ -1,3 +1,30 @@
+## [1.13.0] - 2026-11-15
+
+A provider pool: many keys on one endpoint, and one of them failing is no longer fatal.
+
+### Added
+
+- **Fallback across keys.** Providers that share a base URL are treated as one pool. A call starts
+  at the next key in turn, so the free quota is spread instead of burning the first key, and when
+  a key answers `402` (no credits), `429`, `401`, `403`, a `5xx` or the network fails, the next key
+  gets the request. A malformed request is not retried (it would fail everywhere), keys that
+  failed in the last half hour go to the back of the queue, and at most six are tried per call so
+  a dead pool fails in seconds.
+- `llm.test()` tests exactly one key (`pool=False`), so a green tick means that key works.
+- The Settings card shows the pool size and explains the behaviour; `llm.status()` reports
+  `pooled` and `pool_base`.
+
+### Fixed
+
+- HTTP 402 now reads as what it is - *the key is valid but the account has no usage credits* -
+  instead of a generic provider error.
+
+### Tests
+
+332 (was 325): which statuses are worth another key, a dead key falling through to the next one,
+rotation across a pool, the message for a pool of dead keys, a 400 not being retried, and Test
+staying on a single key.
+
 ## [1.12.0] - 2026-11-15
 
 Lead filters: country, job title, industries (any of, or must-have), company size, location,

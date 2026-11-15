@@ -1284,7 +1284,10 @@
         : '<span class="badge amber">none configured</span>') + '</div>' +
       '<div class="small muted" style="margin-bottom:10px">Bring your own model: OpenAI, Anthropic ' +
       '(Claude), DeepSeek, Ollama (local or cloud) or any OpenAI-compatible endpoint. The default one ' +
-      'powers AI enrichment and pitch drafting.</div>' +
+      'powers AI enrichment and pitch drafting. Providers that share a base URL act as one pool: a ' +
+      'call rotates through the keys and moves on when one is out of quota.</div>' +
+      (s.pooled ? '<div class="small dim" style="margin-bottom:10px">Pool: ' + s.pooled +
+        ' keys on ' + h(s.pool_base || '') + '</div>' : '') +
       (providers.length ? '<div class="list">' + providers.map(function (p) {
         return '<div class="list-item"><div class="avatar">' + h(p.name.slice(0, 2).toUpperCase()) + '</div>' +
           '<div class="grow"><div><strong>' + h(p.name) + '</strong> ' +

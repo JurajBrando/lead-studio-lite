@@ -9,6 +9,7 @@ Two wire formats are supported, because the two big families differ:
   openai     POST {base}/chat/completions   Authorization: Bearer <key>
   anthropic  POST {base}/messages           x-api-key + anthropic-version
 """
+import itertools
 import json
 
 from . import config, db, net
@@ -121,9 +122,14 @@ def status():
             return {"count": len(rows), "configured": True,
                     "default": legacy.get("name") or "Settings AI endpoint",
                     "model": legacy.get("model") or ""}
-    return {"count": len(rows), "configured": bool(default),
-            "default": default["name"] if default else "",
-            "model": default["model"] if default else ""}
+    if not default:
+        return {"count": len(rows), "configured": False, "default": "", "model": ""}
+    base = default.get("base_url") or ""
+    pooled = sum(1 for row in rows if (row.get("base_url") or "") == base)
+    return {"count": len(rows), "configured": True, "default": default["name"],
+            "model": default["model"],
+            "pooled": pooled if pooled > 1 else 0,
+            "pool_base": base if pooled > 1 else ""}
 
 
 # ------------------------------------------------------------------ talking
@@ -137,12 +143,99 @@ def _post(url, payload, headers, timeout=90):
         raise LLMError("The provider answered with something that is not JSON.")
 
 
-def chat(messages, provider_id=None, max_tokens=600, temperature=0.3, system=None):
-    """Send a chat completion to the chosen provider and return the text."""
+# ------------------------------------------------------------------ the pool
+# Several keys against the same endpoint (a row of free Ollama accounts, say) are treated
+# as one pool: a call starts at the next key in turn, and if that key is out of quota or
+# refused, the next one gets the request. One dead key no longer stops the app.
+_CURSOR = itertools.count()
+
+
+def _pool(provider):
+    if not provider.get("id"):
+        return [provider]
+    rows = db.rows("SELECT * FROM llm_providers WHERE base_url=? ORDER BY id",
+                   (provider.get("base_url") or "",))
+    return rows or [provider]
+
+
+def _candidates(provider, explicit):
+    pool = _pool(provider)
+    if len(pool) <= 1:
+        return [provider]
+    start = next(_CURSOR) % len(pool)
+    ordered = pool[start:] + pool[:start]
+    if explicit and provider.get("id"):
+        ordered = [provider] + [row for row in ordered if row["id"] != provider["id"]]
+    return ordered
+
+
+def _retryable(exc):
+    """Worth trying the next key? Quota, auth, rate limit, a server fault - yes.
+    A malformed request - no, it would fail the same way everywhere."""
+    if not isinstance(exc, net.NetError):
+        return False
+    status = getattr(exc, "status", 0) or 0
+    return status in (0, 401, 402, 403, 408, 409, 425, 429) or status >= 500
+
+
+def _mark(provider, ok):
+    if not provider.get("id"):
+        return
+    try:
+        db.execute("UPDATE llm_providers SET last_test_ts=?, last_test_ok=? WHERE id=?",
+                   (db.now(), 1 if ok else 0, provider["id"]))
+    except Exception:                               # noqa: BLE001 - never fail a chat over this
+        pass
+
+
+def chat(messages, provider_id=None, max_tokens=600, temperature=0.3, system=None,
+         pool=True, max_tries=6):
+    """Send a chat completion to the chosen provider and return the text.
+
+    With several providers on the same base URL, the request walks the pool until one
+    answers; the cursor spreads the calls over the keys instead of burning the first one.
+    Keys that failed in the last half hour go to the back of the queue, and at most
+    `max_tries` are attempted so a pool of dead keys fails in seconds, not minutes.
+    """
     provider = get(provider_id)
     if not provider:
         raise LLMError("No LLM provider configured. Add one in Settings -> LLM providers "
                        "(OpenAI, Claude, DeepSeek, Ollama or any compatible endpoint).")
+    candidates = _candidates(provider, bool(provider_id)) if pool else [provider]
+    if len(candidates) > 1:
+        now = db.now()
+        fresh = [row for row in candidates
+                 if not (row.get("last_test_ok") == 0
+                         and now - int(row.get("last_test_ts") or 0) < 1800)]
+        candidates = fresh or candidates
+    failure = None
+    for candidate in candidates[:max(1, int(max_tries))]:
+        try:
+            text = _chat_once(candidate, messages, max_tokens, temperature, system)
+        except (LLMError, net.NetError) as exc:
+            failure = exc
+            _mark(candidate, False)
+            if not _retryable(exc):
+                raise
+            continue
+        _mark(candidate, True)
+        return text
+    raise LLMError(_describe(failure))
+
+
+def _describe(exc):
+    if exc is None:
+        return "Every provider in the pool failed."
+    status = getattr(exc, "status", 0) or 0
+    if status == 402:
+        return ("The key is valid but the account has no usage credits (HTTP 402). "
+                "Add credits or a plan on ollama.com/plans, or point the pool at another key.")
+    if status == 429:
+        return "Every key in the pool is rate limited (HTTP 429). Try again later."
+    return str(exc)
+
+
+def _chat_once(provider, messages, max_tokens, temperature, system):
     key = str(provider.get("api_key") or "").strip()
     base = str(provider.get("base_url") or "").rstrip("/")
     model = provider.get("model") or ""
@@ -180,7 +273,8 @@ def test(provider_id=None):
         return {"ok": False, "error": "No provider configured yet."}
     try:
         reply = chat([{"role": "user", "content": "Reply with the single word: ready"}],
-                     provider_id=provider.get("id") or None, max_tokens=10, temperature=0)
+                     provider_id=provider.get("id") or None, max_tokens=10, temperature=0,
+                     pool=False)
     except LLMError as exc:
         if provider.get("id"):
             db.execute("UPDATE llm_providers SET last_test_ts=?, last_test_ok=0 WHERE id=?",

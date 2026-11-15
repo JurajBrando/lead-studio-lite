@@ -70,7 +70,9 @@ built-in data enrichment.
   offer pages with an affiliate disclosure, and a bundled 30-offer starter pack.
   See [docs/OFFERS.md](docs/OFFERS.md).
 - **Bring your own LLM** — OpenAI, Anthropic (Claude), DeepSeek, Ollama or any OpenAI-compatible
-  endpoint, managed as a list with a default and a test button.
+  endpoint, managed as a list with a default and a test button. Providers that share a base URL
+  form a **pool**: calls rotate through the keys and fall back to the next one when a key is out
+  of quota.
 - **Brand watch** — monitor any number of business domains for lookalikes, typosquats and scam
   clones: registered lookalike names, new registrations and phishing listings, with a per-brand case
   file and CSV export. See [docs/BRAND_WATCH.md](docs/BRAND_WATCH.md).
