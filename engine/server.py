@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import brands, chat, connectors, crawl, demo, domain_sources, hf_data, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -103,6 +103,7 @@ def r_state():
                 "offers_active": db.scalar("SELECT COUNT(*) FROM offers WHERE active=1")},
             "llm": llm.status(),
             "mcp": mcp_client.status_all(),
+            "manyreach": manyreach_api.status(),
             "oauth": oauth.status()}
 
 
@@ -263,6 +264,22 @@ def r_mcp_items(q):
 
 def r_mcp_custom(p):
     return mcp_client.save_custom(p)
+
+
+def r_manyreach_status(q=None):
+    return {"ok": True, **manyreach_api.status()}
+
+
+def r_manyreach_key(p):
+    return manyreach_api.set_key(p.get("key") or "")
+
+
+def r_manyreach_sync(p):
+    answer = manyreach_api.sync()
+    if answer.get("ok"):
+        answer["items"] = mcp_client.items("manyreach")
+        answer["status"] = manyreach_api.status()
+    return answer
 
 
 def r_mcp_disconnect(p):
@@ -1384,6 +1401,7 @@ ROUTES_GET = {
     "/api/domain/list": r_domain_list,
     "/api/mcp/status": r_mcp_status,
     "/api/mcp/items": r_mcp_items,
+    "/api/manyreach/status": r_manyreach_status,
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
@@ -1415,6 +1433,8 @@ ROUTES_POST = {
     "/api/mcp/call": r_mcp_call,
     "/api/mcp/pull": r_mcp_pull,
     "/api/mcp/custom": r_mcp_custom,
+    "/api/manyreach/key": r_manyreach_key,
+    "/api/manyreach/sync": r_manyreach_sync,
     "/api/mcp/disconnect": r_mcp_disconnect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,

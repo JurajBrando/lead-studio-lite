@@ -1355,6 +1355,7 @@
   // ---- MCP connections (another server the app calls, not the app as a server)
   function mcpCard(d) {
     var list = d.mcp || [];
+    var mr = d.manyreach || { counts: {} };
     return '<div class="card mt" id="mcp-card"><div class="card-head"><h2>MCP connections</h2>' +
       '<div class="spacer"></div><span class="small dim">remote MCP servers this app calls</span></div>' +
       '<div class="small muted" style="margin-bottom:10px">Manyreach runs over its own MCP server ' +
@@ -1377,6 +1378,21 @@
             : '<button class="btn sm primary" data-mcp-on="' + h(c.name) + '">Connect</button>') +
           '</div></div>';
       }).join('') + '</div>' : '<div class="small dim">No MCP connection defined.</div>') +
+      '<div class="sep"></div>' +
+      '<div class="small muted">Or skip OAuth: paste the Manyreach REST API key ' +
+      '(<span class="mono">X-API-Key</span>). It paginates 1000 rows a page and fills the same lists.</div>' +
+      '<div class="row"><div class="field"><label>Manyreach API key</label>' +
+      '<input type="password" id="mr-key" placeholder="' +
+      (mr.has_key ? 'a key is saved - paste a new one to replace it' : 'paste the API key') +
+      '"></div><div class="field"><label>&nbsp;</label>' +
+      '<button class="btn" data-act="mr-save">Save key</button> ' +
+      '<button class="btn primary" data-act="mr-sync"' + (mr.has_key ? '' : ' disabled') +
+      '>Sync campaigns &amp; senders</button></div></div>' +
+      '<div class="small dim">' + (mr.has_key
+        ? (num((mr.counts || {}).campaigns || 0) + ' campaigns and ' +
+           num((mr.counts || {}).senders || 0) + ' senders stored' +
+           (mr.last_sync ? ' · last sync ' + fmtWhen(mr.last_sync) : ''))
+        : 'No API key yet.') + '</div>' +
       '<div class="sep"></div><div class="row">' +
       '<div class="field"><label>Add another MCP server</label>' +
       '<input type="text" id="mcp-name" placeholder="Instantly"></div>' +
@@ -2250,6 +2266,24 @@
       });
     },
     import: function () { importModal(); },
+    'mr-save': function () {
+      var key = svVal('mr-key');
+      if (!key) return toast('Paste the API key first', 'err');
+      call('/api/manyreach/key', { key: key }).then(function (r) {
+        if (!r.ok) return toast(r.error || 'That key was refused', 'err');
+        toast('Connected to ' + ((r.account && r.account.title) || 'Manyreach'));
+        refresh();
+      });
+    },
+    'mr-sync': function () {
+      toast('Downloading campaigns and senders from the API...');
+      call('/api/manyreach/sync', {}).then(function (r) {
+        if (!r.ok) return toast(r.error || 'The sync failed', 'err');
+        var counts = r.counts || {};
+        toast(num(counts.campaigns || 0) + ' campaigns, ' + num(counts.senders || 0) + ' senders');
+        refresh().then(function () { renderMcpItems('manyreach', r.items || []); });
+      });
+    },
     'mcp-add': function () {
       var name = svVal('mcp-name'), url = svVal('mcp-url'), token = svVal('mcp-token');
       if (!name || !url) return toast('A name and an MCP URL are required', 'err');

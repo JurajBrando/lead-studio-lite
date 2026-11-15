@@ -121,6 +121,20 @@ snapshot (a second download replaces the first). Manyreach declares two:
 Manyreach's generic tools require an `intent` object on every call (`{objective, step}` — the
 business objective, never personal data, credentials or message content); the client adds it.
 
+## Manyreach through its REST API
+
+The MCP server is an agent interface; Manyreach also has a plain REST API v2
+(`https://app.manyreach.com/api/v2`, [OpenAPI spec](https://app.manyreach.com/openapi/v2.json)),
+which the same card can use instead: paste the API key, press *Sync campaigns & senders*.
+
+- Auth is one header, `X-API-Key: <guid>`; query-string auth is not accepted by v2.
+- `GET /campaigns?pageQuery.page=&pageQuery.limit=` and `GET /senders?page=&limit=`, up to 1000
+  rows a page, with `pagination.totalItems` telling the client when to stop.
+- Rate limit: 60 requests a minute per organisation (300 on the higher tiers), `429` with
+  `Retry-After` when exceeded — the sync needs two requests, so it never comes close.
+- What it stores is the same `mcp_items` snapshot the MCP download writes, so the card shows one
+  list either way, and only the newest snapshot is kept.
+
 ## Any other sender platform
 
 Most hosted MCP servers are one of two kinds, and the card's *Add another MCP server* form covers

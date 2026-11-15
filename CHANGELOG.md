@@ -1,3 +1,26 @@
+## [1.16.0] - 2026-11-15
+
+Manyreach through its REST API v2, next to the MCP connection.
+
+### Added
+
+- **Manyreach API key** (`X-API-Key`) on the MCP card: paste it, and *Sync campaigns & senders*
+  pulls the **whole account** — `GET /api/v2/campaigns` and `/api/v2/senders` with
+  `limit=1000` a page, paging on `pagination.totalItems`. On the account this was built against
+  that is **100 campaigns and 876 senders** in two requests, where the MCP download stops at the
+  first 30 of each.
+- The rows land in `mcp_items` through the same mapping the MCP download uses, so the card shows
+  one list whichever path filled it, and a failed sync leaves the previous snapshot alone.
+- A key that Manyreach refuses is not kept: saving validates it against `/api/v2/account` first
+  and rolls back otherwise.
+- `GET /api/manyreach/status`, `POST /api/manyreach/key`, `POST /api/manyreach/sync`.
+
+### Tests
+
+361 (was 353): key validation and rollback, the "no key, no request" case, paging that stops on
+the reported total, an empty page, a failed page, a full sync storing both kinds, and a failed
+sync that keeps the old snapshot.
+
 ## [1.15.0] - 2026-11-15
 
 Downloading from an MCP server, and connecting any other sender platform.

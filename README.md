@@ -83,6 +83,8 @@ built-in data enrichment.
   and **downloads** what it declares — Manyreach's campaigns and senders land in `mcp_items` and
   are shown in the card. Any other MCP server can be added with a URL and an optional token.
   See [docs/MCP.md](docs/MCP.md#the-other-direction-mcp-servers-this-app-calls).
+- **Manyreach REST API** — the same card takes a Manyreach API key (`X-API-Key`, 1000 rows a
+  page) and syncs the whole account: every campaign and every sender, not the first page.
 - **Social tab** — make a short video from a title, an audio track and one picture (or a source
   video), then plan, schedule and measure it through Metricool: a unified inbox, a content
   calendar, the Meta/Google/TikTok ad panels and the reporting cards. See [docs/SOCIAL.md](docs/SOCIAL.md).
