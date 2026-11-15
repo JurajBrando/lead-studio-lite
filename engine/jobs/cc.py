@@ -206,7 +206,7 @@ def run(ctx):
 JOBS = [Job(
     key="commoncrawl",
     name="Common Crawl: domain footprint",
-    group="Enrichment",
+    group="Domains",
     description="Checks known and lead domains against the Common Crawl index and stores whether "
                 "the site was crawled, how many pages and when the last capture happened.",
     run=run,

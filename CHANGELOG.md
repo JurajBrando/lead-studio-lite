@@ -1,3 +1,47 @@
+## [1.24.0] - 2026-11-15
+
+The Daily page runs in the order the data actually flows.
+
+### Changed
+
+- **Four numbered stages**, in this order:
+  1. **Domains** — new domains feed → MX verification → Common Crawl footprint → Common Crawl
+     host index → contact finder (domains → emails).
+  2. **Signals** — phishing, hiring, bankruptcy, brand watch, ad transparency.
+  3. **Data** — merge files into leads.
+  4. **AI** — segment + angle, last, once the data exists.
+- `scheduler.list_jobs()` sorts by group, then by the chain inside the group (`CHAIN_ORDER`), then
+  by clock time, so a domain arrives, its mail server is checked, Common Crawl says whether the
+  site is real and the contact finder looks for an address, in that order. Each stage carries a
+  one-line explanation.
+- The groups changed from `Signals` / `Enrichment` to `Domains` / `Signals` / `Data` / `AI`;
+  `sync_registry()` rewrites existing rows, so nothing has to be recreated. Schedules are untouched.
+
+### Tests
+
+424 (was 419): domains before signals before data before AI, the domain chain in order, the AI job
+last, every job in a known group, and the AI job still describing itself as optional.
+
+## [1.23.0] - 2026-11-15
+
+The campaigns table shows the sending platform's own numbers.
+
+### Added
+
+- Manyreach campaigns keep their statistics on the sequence (`sequences.stats_json`): prospects,
+  reached, replies, interested, conversions, bounce count, sender count, status and the campaign's
+  own created date — matching the figures Manyreach shows.
+- Opens and clicks are summed from `GET /api/v2/campaigns/{id}/stats` (its series are
+  `{"count": [...]}` arrays with nulls), for campaigns that have sent anything, capped at 25 lookups
+  per import.
+- The table gained a totals row and prints a dash where a platform-sourced figure is missing rather
+  than a misleading zero.
+
+### Changed
+
+- A re-import now refreshes the numbers of campaigns that are already there, and their date, without
+  touching their steps.
+
 ## [1.22.0] - 2026-11-15
 
 A light design, the affiliate link on HYROS, and campaigns as a table.

@@ -87,7 +87,7 @@ def run(ctx):
 JOBS = [Job(
     key="merge_files",
     name="Merge files into leads",
-    group="Enrichment",
+    group="Data",
     description="Folds every CSV/TSV/Excel file dropped in data/imports into the lead database, "
                 "filling empty fields on existing leads, then moves the files to processed/.",
     run=run,

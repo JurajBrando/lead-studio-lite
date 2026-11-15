@@ -348,7 +348,7 @@ class JobMetaTests(unittest.TestCase):
         job = cc.JOBS[0]
         self.assertEqual(job.key, "commoncrawl")
         self.assertEqual(job.name, "Common Crawl: domain footprint")
-        self.assertEqual(job.group, "Enrichment")
+        self.assertEqual(job.group, "Domains")
         self.assertEqual(job.schedule, "daily 03:00")
         self.assertEqual(job.params, {"limit": 60, "days": 30, "delay": 0.4,
                                       "include_lead_domains": True})

@@ -52,7 +52,7 @@ def run(ctx):
 JOBS = [Job(
     key="domain_mx",
     name="Domain MX verification",
-    group="Enrichment",
+    group="Domains",
     description="Checks whether each domain has a mail server at all (one DNS lookup per domain, "
                 "cached). Dead domains are flagged so no address on them is ever emailed.",
     run=run,

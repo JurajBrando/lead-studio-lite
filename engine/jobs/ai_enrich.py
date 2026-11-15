@@ -102,7 +102,7 @@ def run(ctx):
 JOBS = [Job(
     key="ai_enrich",
     name="AI enrichment: segment + angle",
-    group="Enrichment",
+    group="AI",
     description="Reads each lead's homepage and asks your default LLM provider for industry, "
                 "segment, size, country and a one-line cold-email angle. Optional; needs a provider.",
     run=run,

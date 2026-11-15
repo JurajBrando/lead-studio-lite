@@ -11,6 +11,7 @@ survive restarts. Each run writes a row to `runs` with its log, which is what th
 Automation page shows.
 """
 import json
+import re
 import threading
 import time
 import traceback
@@ -91,9 +92,42 @@ def sync_registry():
                     int(row.get("next_run_ts") or 0) or next_run_ts(schedule), job.key))
 
 
+GROUP_ORDER = ("Domains", "Signals", "Data", "AI")
+
+# The chain inside a group: a domain arrives, its mail server is checked, Common Crawl says
+# whether the site is real, then the contact finder looks for an address. The clock times are
+# the user's; this is only the order the page shows them in.
+CHAIN_ORDER = {
+    "new_domains": 10, "domain_mx": 20, "commoncrawl": 30, "cc_hf": 35, "contact_finder": 40,
+    "phishing_watch": 10, "hiring_signals": 20, "bankruptcy_watch": 30, "brand_watch": 40,
+    "ads_transparency": 50,
+    "merge_files": 10,
+    "ai_enrich": 10,
+}
+
+
+def _group_rank(group):
+    try:
+        return GROUP_ORDER.index(group or "")
+    except ValueError:
+        return len(GROUP_ORDER)
+
+
+def _schedule_rank(schedule):
+    """`daily 06:00` / `weekly sun 04:30` -> (weekly, minutes), so a day runs in clock order."""
+    text = (schedule or "").lower().strip()
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
+    minutes = int(match.group(1)) * 60 + int(match.group(2)) if match else 0
+    return (1 if text.startswith("weekly") else 0, minutes)
+
+
 def list_jobs():
     sync_registry()
-    rows = db.rows("SELECT * FROM jobs ORDER BY grp, name")
+    rows = sorted(db.rows("SELECT * FROM jobs"),
+                  key=lambda row: (_group_rank(row.get("grp")),
+                                   CHAIN_ORDER.get(row.get("key"), 90),
+                                   _schedule_rank(row.get("schedule")),
+                                   row.get("name") or ""))
     out = []
     for row in rows:
         job = registry.by_key(row["key"])

@@ -183,7 +183,7 @@ def run(ctx):
 JOBS = [Job(
     key="cc_hf",
     name="Common Crawl: new domains from the host index (Hugging Face)",
-    group="Enrichment",
+    group="Domains",
     description="Reads a shard of the Common Crawl host index on Hugging Face and adds the "
                 "domains that are not in the list yet, with their fetch statistics. The "
                 "mirror lags the official index, so it runs weekly and adds, it does not "

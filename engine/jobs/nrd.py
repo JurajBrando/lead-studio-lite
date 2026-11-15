@@ -95,7 +95,7 @@ def run(ctx):
 JOBS = [Job(
     key="new_domains",
     name="New domains: daily feed",
-    group="Signals",
+    group="Domains",
     description="Today's newly registered domains (smet.cz, CC BY 4.0), filtered by TLD and "
                 "written to the domains table for MX, Common Crawl and fraud enrichment.",
     run=run,

@@ -1038,9 +1038,27 @@
       if (!res.ok) { box.innerHTML = '<div class="small dim">' + h(res.error) + '</div>'; return; }
       var groups = {};
       res.jobs.forEach(function (j) { (groups[j.grp] = groups[j.grp] || []).push(j); });
+      var order = ['Domains', 'Signals', 'Data', 'AI'];
+      var notes = {
+        Domains: 'First. New domains land, their mail server is checked, Common Crawl says whether ' +
+          'the site is real, and the contact finder looks for an address.',
+        Signals: 'Then. Bankruptcy, fraud, brand and hiring signals, read off the domains that just ' +
+          'came in.',
+        Data: 'Then. Whatever CSV or Excel files were dropped in data/imports are folded in.',
+        AI: 'Last, once the data is there. The AI reads each lead and writes the segment and the ' +
+          'cold-email angle. Optional: it needs a provider.'
+      };
+      var names = Object.keys(groups).sort(function (a, b) {
+        var left = order.indexOf(a), right = order.indexOf(b);
+        return (left < 0 ? 99 : left) - (right < 0 ? 99 : right);
+      });
       var html = '';
-      Object.keys(groups).forEach(function (grp) {
-        html += '<div class="nav-label" style="padding-left:2px">' + h(grp) + '</div>';
+      names.forEach(function (grp, index) {
+        var rank = order.indexOf(grp);
+        html += '<div class="nav-label" style="padding-left:2px">' +
+          (rank >= 0 ? (rank + 1) + ' · ' : '') + h(grp) + '</div>' +
+          (notes[grp] ? '<div class="small dim" style="margin:-4px 0 10px 2px">' + h(notes[grp]) +
+            '</div>' : '');
         groups[grp].forEach(function (j) {
           var last = j.last_run || {};
           var badge = j.running ? '<span class="badge blue">running</span>'

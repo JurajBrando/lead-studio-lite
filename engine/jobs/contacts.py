@@ -95,7 +95,7 @@ def run(ctx):
 JOBS = [Job(
     key="contact_finder",
     name="Contact finder: domains -> emails",
-    group="Enrichment",
+    group="Domains",
     description="Reads each new domain's site (robots-aware), extracts addresses and phones from the "
                 "contact/about/team pages, and creates a lead from the best address it finds.",
     run=run,
