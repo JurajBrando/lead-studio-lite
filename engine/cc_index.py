@@ -189,6 +189,81 @@ def store(results):
     return written
 
 
+def plan_pages(domains, bands=None, repo=REPO, crawl="", local_dir="", per_domain=2, status=200):
+    """Homepage + contact page for many domains, reading each shard **once**.
+
+    The per-domain `pages()` re-opens a shard for every domain; a worklist builder groups the
+    domains by the shard that can hold them and scans it once, which is what makes a batch of
+    hundreds of thousands practical.
+    """
+    from . import cc_warc
+
+    wanted = {str(domain or "").strip().lower() for domain in domains if str(domain or "").strip()}
+    if not wanted:
+        return []
+    if bands:
+        shard_plan = {}
+        for domain in wanted:
+            for band in locate(surtkey(domain), bands):
+                path = band["path"]
+                if local_dir:
+                    path = os.path.join(local_dir, os.path.basename(path))
+                    if not os.path.exists(path):
+                        continue
+                shard_plan.setdefault(path, set()).add(domain)
+    elif local_dir:
+        shard_plan = {path: set(wanted)
+                      for path in sorted(glob.glob(os.path.join(local_dir, "*.parquet")))}
+    else:
+        shard_plan = {}
+        for band in load_bands(repo, crawl):
+            shard_plan.setdefault(band["path"], set())
+        for domain in wanted:
+            for band in locate(surtkey(domain), bands or load_bands(repo, crawl)):
+                shard_plan.setdefault(band["path"], set()).add(domain)
+
+    found = {}
+    opener = (lambda path: open(path, "rb")) if local_dir else \
+        (lambda path: _fs().open("datasets/%s/%s" % (repo, path), "rb"))
+    for path, names in shard_plan.items():
+        if not names:
+            continue
+        with opener(path) as handle:
+            parquet = _pf(handle)
+            columns = [name for name in PAGE_FIELDS if name in parquet.schema_arrow.names]
+            for batch in parquet.iter_batches(batch_size=200000, columns=columns):
+                data = {name: batch.column(index).to_pylist()
+                        for index, name in enumerate(columns)}
+                hosts = data.get("url_host_registered_domain") or []
+                for position, host in enumerate(hosts):
+                    if host not in names:
+                        continue
+                    if status and data.get("fetch_status") and data["fetch_status"][position] != status:
+                        continue
+                    if not (data.get("warc_filename") or [""])[position]:
+                        continue
+                    found.setdefault(host, []).append({
+                        "url": (data.get("url") or [""])[position],
+                        "fetch_time": (data.get("fetch_time") or [None])[position],
+                        "warc_filename": data["warc_filename"][position],
+                        "offset": int((data.get("warc_record_offset") or [0])[position] or 0),
+                        "length": int((data.get("warc_record_length") or [0])[position] or 0)})
+    planned = []
+    for domain, pages in found.items():
+        pages.sort(key=lambda page: (cc_warc.page_score(page["url"]), 0))
+        seen, picked = set(), []
+        for page in pages:
+            kind = "c" if cc_warc.page_score(page["url"]) == 0 else "h"
+            if kind in seen:
+                continue
+            seen.add(kind)
+            picked.append({"domain": domain, "kind": kind, **page})
+            if len(picked) >= per_domain:
+                break
+        planned.extend(picked)
+    return planned
+
+
 def pending(limit=25):
     """Domains that have not been looked up in the index yet, real TLDs first."""
     return [row["domain"] for row in db.rows(

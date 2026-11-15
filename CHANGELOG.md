@@ -1,3 +1,37 @@
+## [1.27.0] - 2026-11-15
+
+Batched archive fetching, and the Hugging Face bucket as the fast source.
+
+### Added
+
+- **`engine/cc_fetch.py`**: the bulk shape a 76-pages-a-second scraper uses — plan every
+  homepage/contact page first, order the plan by WARC file, download in **parallel threads** over
+  **keep-alive connections**, remember each record in a `cc_fetch` table (so a stop resumes), and
+  export the rows as CSV.
+- **Two WARC sources**: `bucket` — Hugging Face's `commoncrawl/commoncrawl` storage bucket
+  (`huggingface.co/buckets/commoncrawl/commoncrawl/resolve/…`, public, answers `206` to byte
+  ranges after a signed redirect) — and `http` — `data.commoncrawl.org`.
+- **`cc_index.plan_pages()`**: reads each index shard **once** for a whole batch of domains,
+  instead of once per domain.
+
+### Fixed
+
+- The contacts job fetched **one record at a time** whenever the plan spanned many WARC files: it
+  created a thread pool per file group, and most groups held a single record. There is one pool
+  for the whole plan now, with the file order kept.
+
+### Measured from this machine
+
+- `data.commoncrawl.org`: **1.5–2.4 ranges/s**, unchanged with 16 or 32 threads — it rate-limits
+  per client.
+- The Hugging Face bucket: **14.9/s at 32 threads, 21.6/s at 64**. Common Crawl's own guide puts
+  HF-bucket-to-edge-client below 100 receipts/s, HF-to-HF at 1,500/s and S3-to-S3 at 3,500/s.
+
+### Tests
+
+446 (was 440): the bucket path and its signed redirect, one pool for the whole plan, a failed page
+becoming a result rather than an exception, and the resume table.
+
 ## [1.26.0] - 2026-11-15
 
 From the index to the page: contacts out of the Common Crawl archive.
