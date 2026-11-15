@@ -243,6 +243,28 @@ def r_mcp_call(p):
         return {"ok": False, "error": str(exc)}
 
 
+def r_mcp_pull(p):
+    try:
+        answer = mcp_client.pull(str(p.get("name") or ""), str(p.get("kind") or ""))
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
+    if answer.get("ok"):
+        answer["items"] = mcp_client.items(str(p.get("name") or ""))
+    return answer
+
+
+def r_mcp_items(q):
+    try:
+        rows = mcp_client.items(str(q.get("name") or ""), str(q.get("kind") or ""))
+    except mcp_client.McpError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "items": rows}
+
+
+def r_mcp_custom(p):
+    return mcp_client.save_custom(p)
+
+
 def r_mcp_disconnect(p):
     try:
         return mcp_client.disconnect(str(p.get("name") or ""))
@@ -1361,6 +1383,7 @@ ROUTES_GET = {
     "/api/domains": r_domains,
     "/api/domain/list": r_domain_list,
     "/api/mcp/status": r_mcp_status,
+    "/api/mcp/items": r_mcp_items,
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
@@ -1390,6 +1413,8 @@ ROUTES_POST = {
     "/api/mcp/start": r_mcp_start,
     "/api/mcp/tools": r_mcp_tools,
     "/api/mcp/call": r_mcp_call,
+    "/api/mcp/pull": r_mcp_pull,
+    "/api/mcp/custom": r_mcp_custom,
     "/api/mcp/disconnect": r_mcp_disconnect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,

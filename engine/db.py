@@ -285,6 +285,17 @@ CREATE TABLE IF NOT EXISTS offer_connections (
 );
 CREATE INDEX IF NOT EXISTS idx_conn_offer ON offer_connections(offer_id);
 
+CREATE TABLE IF NOT EXISTS mcp_items (
+    connection TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    item_id    TEXT NOT NULL,
+    name       TEXT DEFAULT '',
+    status     TEXT DEFAULT '',
+    payload    TEXT DEFAULT '',
+    updated_ts INTEGER DEFAULT 0,
+    PRIMARY KEY (connection, kind, item_id)
+);
+
 CREATE TABLE IF NOT EXISTS llm_providers (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,

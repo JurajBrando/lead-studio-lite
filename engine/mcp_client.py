@@ -18,13 +18,14 @@ Tokens live in data/settings.json next to the mailbox credentials, never in the 
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config
+from . import config, db
 
 CONNECTIONS = {
     "manyreach": {
@@ -34,6 +35,22 @@ CONNECTIONS = {
                 "Signing in asks for your Manyreach API key.",
     },
 }
+
+# What each connection can be asked to download, and how. Manyreach exposes a small set of
+# generic tools (`read`, `create`, ...) whose "name" argument selects the operation, so a
+# dataset is a tool plus the arguments that go with it.
+DATASETS = {
+    "manyreach": {
+        "campaigns": {"label": "Campaigns", "tool": "read",
+                      "arguments": {"name": "campaign/get",
+                                    "arguments": {"pageQuery": {"page": 1, "limit": 100}}}},
+        "senders": {"label": "Senders", "tool": "read",
+                    "arguments": {"name": "sender/get",
+                                  "arguments": {"page": 1, "limit": 30}}},
+    },
+}
+INTENT = {"objective": "Keep a local copy of this workspace's campaigns and senders",
+          "step": "read"}
 SCOPE = "mcp"
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_NAME = "Lead Studio Lite"
@@ -85,10 +102,50 @@ def _json(raw, what):
 
 
 def connection(name):
-    entry = CONNECTIONS.get(str(name or "").strip().lower())
-    if not entry:
-        raise McpError("Unknown MCP connection.")
-    return entry
+    key = str(name or "").strip().lower()
+    if key in CONNECTIONS:
+        return CONNECTIONS[key]
+    custom = (config.load_settings().get("mcp_custom") or {})
+    if key in custom:
+        return custom[key]
+    raise McpError("Unknown MCP connection.")
+
+
+def save_custom(payload):
+    """A server the user added: a name, a URL, and optionally a bearer token."""
+    name = re_slug(payload.get("name") or payload.get("label") or "")
+    url = str(payload.get("url") or "").strip()
+    if not name:
+        return {"ok": False, "error": "Give the server a name."}
+    if not url.lower().startswith(("http://", "https://")):
+        return {"ok": False, "error": "The MCP URL has to start with http:// or https://"}
+    if name in CONNECTIONS:
+        return {"ok": False, "error": "That name is taken by a built-in connection."}
+    settings = config.load_settings()
+    custom = dict(settings.get("mcp_custom") or {})
+    custom[name] = {"label": str(payload.get("label") or name).strip()[:60], "url": url,
+                    "note": "A server you added. " + (
+                        "It uses the token you pasted." if payload.get("token")
+                        else "It has to support OAuth for the browser sign-in.")}
+    settings["mcp_custom"] = custom
+    config.save_settings(settings)
+    if payload.get("token"):
+        block = _saved(name)
+        block.update({"access_token": str(payload["token"]).strip(), "expires_at": 0,
+                      "connected_at": int(time.time())})
+        _save(name, block)
+    return {"ok": True, "name": name}
+
+
+def re_slug(value):
+    return re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower()).strip("-")[:40]
+
+
+def connections():
+    """Built-in plus the ones the user added."""
+    out = dict(CONNECTIONS)
+    out.update(config.load_settings().get("mcp_custom") or {})
+    return out
 
 
 def _saved(name):
@@ -264,7 +321,7 @@ def status(name):
 
 
 def status_all():
-    return [status(name) for name in CONNECTIONS]
+    return [status(name) for name in connections()]
 
 
 # ------------------------------------------------------------------ MCP transport
@@ -380,3 +437,78 @@ def call(name, tool, arguments=None):
             text.append(str(item.get("text") or ""))
     return {"ok": not result.get("isError"), "text": "\n".join(text),
             "result": result, "tool": tool}
+
+
+# ------------------------------------------------------------------ downloading
+def _json_from_text(text_value):
+    """Manyreach answers with a header line, then the JSON body."""
+    body = (text_value or "").strip()
+    start = body.find("{")
+    if start < 0:
+        raise McpError("The server answered without JSON: %s" % body[:160])
+    try:
+        return json.loads(body[start:])
+    except ValueError:
+        raise McpError("The server answered with malformed JSON: %s" % body[start:start + 160])
+
+
+def _item_row(kind, item):
+    """(id, label, status) for one record of a dataset."""
+    if kind == "campaigns":
+        return (str(item.get("campaignId") or item.get("id") or ""),
+                str(item.get("name") or ""), str(item.get("status") or ""))
+    return (str(item.get("senderId") or item.get("id") or ""),
+            str(item.get("email") or item.get("fromName") or ""),
+            "warmup" if item.get("warmup") else str(item.get("status") or ""))
+
+
+def pull(name, kind=""):
+    """Download one dataset (or all of them) from a connection into `mcp_items`."""
+    connection(name)
+    available = DATASETS.get(name) or {}
+    if not available:
+        return {"ok": False, "error": "%s does not declare anything to download yet." % name}
+    wanted = [kind] if kind else list(available.keys())
+    results = []
+    for one in wanted:
+        spec = available.get(one)
+        if not spec:
+            return {"ok": False, "error": "Unknown dataset: %s" % one}
+        arguments = dict(spec["arguments"])
+        arguments.setdefault("intent", INTENT)
+        answer = call(name, spec["tool"], arguments)
+        if not answer.get("ok"):
+            results.append({"kind": one, "ok": False, "error": (answer.get("text") or "")[:300]})
+            continue
+        data = _json_from_text(answer.get("text"))
+        items = data.get("items") or []
+        records = []
+        now = db.now()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id, label, state = _item_row(one, item)
+            if not item_id:
+                continue
+            records.append({"connection": name, "kind": one, "item_id": item_id,
+                            "name": label[:200], "status": state[:40],
+                            "payload": json.dumps(item, default=str)[:8000],
+                            "updated_ts": now})
+        if records:
+            db.execute("DELETE FROM mcp_items WHERE connection=? AND kind=?", (name, one))
+            db.insert_many("mcp_items", records)
+        results.append({"kind": one, "ok": True, "count": len(records)})
+    db.event("mcp", "%s downloaded: %s" % (
+        name, ", ".join("%s %d" % (row["kind"], row.get("count", 0))
+                        for row in results if row.get("ok"))))
+    return {"ok": any(row.get("ok") for row in results), "results": results}
+
+
+def items(name, kind=""):
+    sql = "SELECT * FROM mcp_items WHERE connection=?"
+    args = [name]
+    if kind:
+        sql += " AND kind=?"
+        args.append(kind)
+    sql += " ORDER BY kind, name"
+    return db.rows(sql, tuple(args))

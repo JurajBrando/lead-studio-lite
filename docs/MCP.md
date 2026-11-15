@@ -110,9 +110,34 @@ remove it there.
 as a JSON skeleton. *Run* sends `tools/call` and prints the raw answer — that is the escape hatch
 for any tool the app does not wrap in its own UI.
 
-`engine/mcp_client.py` is generic: a connection is an entry in `CONNECTIONS` (name, label, URL,
-note), and nothing in the module is service-specific. Adding another remote MCP server is a
-five-line dict entry plus, if you want to test it, a case in `tests/test_mcp_client.py`.
+*Download* runs the datasets the connection declares and keeps the result in `mcp_items`, one
+snapshot (a second download replaces the first). Manyreach declares two:
+
+| Dataset | Operation | What lands in the card |
+| --- | --- | --- |
+| `campaigns` | `campaign/get` | name + status, 100 per page |
+| `senders` | `sender/get` | email + warmup state, 30 per page |
+
+Manyreach's generic tools require an `intent` object on every call (`{objective, step}` — the
+business objective, never personal data, credentials or message content); the client adds it.
+
+## Any other sender platform
+
+Most hosted MCP servers are one of two kinds, and the card's *Add another MCP server* form covers
+both:
+
+* **Token** — paste the URL as the vendor documents it and the key in the token field. Instantly's
+  hosted server is `https://mcp.instantly.ai/mcp/<api key>`; the key can sit in the URL or in the
+  token field, and both are stored in `data/settings.json`.
+* **OAuth** — leave the token empty and press Connect; the same discovery + dynamic registration +
+  PKCE flow runs against that vendor. lemlist and Apify publish OAuth MCP servers.
+
+Not supported: the **legacy SSE transport** (Smartlead's `https://mcp.smartlead.ai/sse?user_api_key=…`)
+and stdio-only servers (Postmark's package, for instance). Those need a gateway that speaks
+Streamable HTTP.
+
+`engine/mcp_client.py` is generic: `CONNECTIONS` holds the built-in entries, `DATASETS` says what
+each one can download, and a user-added server is a row in `settings.mcp_custom`.
 
 ## What it does not do
 

@@ -177,5 +177,85 @@ class RpcTests(unittest.TestCase):
         self.assertIn("no such campaign", answer["text"])
 
 
+class DownloadTests(unittest.TestCase):
+    def setUp(self):
+        from engine import db
+        db.init_db()
+        db.execute("DELETE FROM mcp_items WHERE connection='manyreach'")
+
+    def tearDown(self):
+        from engine import db
+        db.execute("DELETE FROM mcp_items WHERE connection='manyreach'")
+
+    def test_a_header_line_before_the_json_is_tolerated(self):
+        data = mcp_client._json_from_text(
+            "response_id: x | seq: 1 | status: ok\n\n{\"items\": [{\"campaignId\": 1}]}")
+        self.assertEqual(data["items"][0]["campaignId"], 1)
+
+    def test_no_json_is_a_clear_error(self):
+        with self.assertRaises(mcp_client.McpError):
+            mcp_client._json_from_text("no json here")
+
+    def test_campaigns_and_senders_map_to_id_label_status(self):
+        self.assertEqual(mcp_client._item_row("campaigns",
+                                              {"campaignId": 7, "name": "C", "status": "Running"}),
+                         ("7", "C", "Running"))
+        self.assertEqual(mcp_client._item_row("senders", {"senderId": 3, "email": "a@b.c",
+                                                          "warmup": True}),
+                         ("3", "a@b.c", "warmup"))
+
+    def test_pull_stores_rows_and_replaces_them_next_time(self):
+        answers = {
+            "campaign/get": {"items": [{"campaignId": 1, "name": "One", "status": "Draft"},
+                                       {"campaignId": 2, "name": "Two", "status": "Running"}]},
+            "sender/get": {"items": [{"senderId": 9, "email": "s@x.com", "warmup": True}]},
+        }
+
+        def fake(name, tool, arguments):
+            return {"ok": True, "text": json.dumps(answers[arguments["name"]])}
+
+        with mock.patch.object(mcp_client, "call", side_effect=fake):
+            answer = mcp_client.pull("manyreach")
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual([row["count"] for row in answer["results"]], [2, 1])
+        self.assertEqual(len(mcp_client.items("manyreach")), 3)
+
+        with mock.patch.object(mcp_client, "call", side_effect=fake):
+            mcp_client.pull("manyreach", "campaigns")
+        self.assertEqual(len(mcp_client.items("manyreach", "campaigns")), 2)
+
+    def test_a_failed_download_is_reported(self):
+        with mock.patch.object(mcp_client, "call",
+                               return_value={"ok": False, "text": "no credits"}):
+            answer = mcp_client.pull("manyreach", "campaigns")
+        self.assertFalse(answer["ok"])
+        self.assertIn("no credits", answer["results"][0]["error"])
+
+
+class CustomConnectionTests(unittest.TestCase):
+    def tearDown(self):
+        from engine import config
+        settings = config.load_settings()
+        settings.pop("mcp_custom", None)
+        settings.pop("mcp_connections", None)
+        config.save_settings(settings)
+
+    def test_a_server_can_be_added_with_a_token(self):
+        result = mcp_client.save_custom({"name": "Instantly", "url": "https://mcp.instantly.ai/mcp/key",
+                                         "token": "tok-123"})
+        self.assertTrue(result["ok"], result)
+        entry = mcp_client.connection("instantly")
+        self.assertEqual(entry["url"], "https://mcp.instantly.ai/mcp/key")
+        status = mcp_client.status("instantly")
+        self.assertTrue(status["connected"])
+
+    def test_a_bad_url_is_refused(self):
+        self.assertFalse(mcp_client.save_custom({"name": "X", "url": "not-a-url"})["ok"])
+
+    def test_a_built_in_name_cannot_be_replaced(self):
+        self.assertFalse(mcp_client.save_custom({"name": "manyreach",
+                                                 "url": "https://x.test/mcp"})["ok"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

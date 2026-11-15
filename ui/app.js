@@ -1371,12 +1371,47 @@
           '<div class="t-sub mono">' + h(c.url) + '</div></div>' +
           '<div class="nowrap">' +
           (c.connected
-            ? '<button class="btn sm" data-mcp-tools="' + h(c.name) + '">Tools</button> ' +
+            ? '<button class="btn sm" data-mcp-pull="' + h(c.name) + '">Download</button> ' +
+              '<button class="btn sm" data-mcp-tools="' + h(c.name) + '">Tools</button> ' +
               '<button class="btn sm danger" data-mcp-off="' + h(c.name) + '">Disconnect</button>'
             : '<button class="btn sm primary" data-mcp-on="' + h(c.name) + '">Connect</button>') +
           '</div></div>';
       }).join('') + '</div>' : '<div class="small dim">No MCP connection defined.</div>') +
+      '<div class="sep"></div><div class="row">' +
+      '<div class="field"><label>Add another MCP server</label>' +
+      '<input type="text" id="mcp-name" placeholder="Instantly"></div>' +
+      '<div class="field"><label>MCP URL</label>' +
+      '<input type="text" id="mcp-url" placeholder="https://mcp.instantly.ai/mcp/your-key"></div>' +
+      '<div class="field"><label>Token <span class="dim">(optional)</span></label>' +
+      '<input type="password" id="mcp-token" placeholder="for servers without OAuth"></div></div>' +
+      '<button class="btn" data-act="mcp-add">Add server</button>' +
+      '<div class="hint small dim mt">Known remote servers: Instantly ' +
+      '(<span class="mono">https://mcp.instantly.ai/mcp/&lt;key&gt;</span>), lemlist and Apify ' +
+      '(both OAuth). Smartlead publishes SSE only, which this client does not speak.</div>' +
       '<div id="mcp-out" class="mt"></div></div>';
+  }
+
+  function renderMcpItems(name, items) {
+    var box = $('#mcp-out');
+    if (!box) return;
+    function block(title, rows, withStatus) {
+      return '<div class="card" style="background:var(--panel-2)">' +
+        '<div class="card-head"><h3>' + h(title) + '</h3><div class="spacer"></div>' +
+        '<span class="badge grey">' + rows.length + '</span></div>' +
+        (rows.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th></tr></thead>' +
+            '<tbody>' + rows.map(function (row) {
+              return '<tr><td class="small">' + h(row.name) + '</td>' +
+                '<td><span class="badge ' + (row.status === 'warmup' ? 'amber' : 'grey') + '">' +
+                h(row.status || '-') + '</span></td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="small dim">nothing stored yet</div>') + '</div>';
+    }
+    var campaigns = (items || []).filter(function (item) { return item.kind === 'campaigns'; });
+    var senders = (items || []).filter(function (item) { return item.kind === 'senders'; });
+    box.innerHTML = '<div class="small dim" style="margin-bottom:8px">Stored from ' + h(name) +
+      ', refreshed on demand.</div><div class="grid cols-2">' +
+      block('Campaigns', campaigns) + block('Senders', senders) + '</div>';
   }
 
   function renderMcpTools(name, tools) {
@@ -1456,6 +1491,26 @@
               }
             });
           }, 5000);
+        });
+      };
+    });
+    $$('[data-mcp-pull]').forEach(function (button) {
+      button.onclick = function () {
+        var name = button.dataset.mcpPull;
+        var box = $('#mcp-out');
+        button.disabled = true;
+        if (box) box.innerHTML = '<div class="small dim">Downloading campaigns and senders...</div>';
+        call('/api/mcp/pull', { name: name }).then(function (r) {
+          button.disabled = false;
+          if (!r.ok) {
+            var reason = (r.results || []).filter(function (row) { return !row.ok; })
+              .map(function (row) { return row.error; }).join(' ');
+            if (box) box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+              h(r.error || reason || 'The download failed') + '</div>';
+            return;
+          }
+          renderMcpItems(name, r.items || []);
+          toast((r.items || []).length + ' records stored');
         });
       };
     });
@@ -2195,6 +2250,15 @@
       });
     },
     import: function () { importModal(); },
+    'mcp-add': function () {
+      var name = svVal('mcp-name'), url = svVal('mcp-url'), token = svVal('mcp-token');
+      if (!name || !url) return toast('A name and an MCP URL are required', 'err');
+      call('/api/mcp/custom', { name: name, url: url, token: token }).then(function (r) {
+        if (!r.ok) return toast(r.error || 'Could not add that server', 'err');
+        toast('Server added');
+        refresh();
+      });
+    },
     'bulk-data': function () { bulkDataModal(); },
     'lead-apply': function () { state.leads.page = 1; loadLeads(); },
     'lead-clear': function () {

@@ -79,8 +79,10 @@ built-in data enrichment.
 - **MCP server** — `leadstudio_mcp.py` lets Claude Desktop or any MCP client search leads, import
   CSVs, run jobs and read signals. See [docs/MCP.md](docs/MCP.md).
 - **MCP connections** — the app is an MCP *client* too: Settings → *MCP connections* connects a
-  remote server over OAuth (dynamic client registration + PKCE) and lets you list and run any of
-  its tools. **Manyreach** is wired that way. See [docs/MCP.md](docs/MCP.md#the-other-direction-mcp-servers-this-app-calls).
+  remote server over OAuth (dynamic client registration + PKCE) or with a token, lists its tools,
+  and **downloads** what it declares — Manyreach's campaigns and senders land in `mcp_items` and
+  are shown in the card. Any other MCP server can be added with a URL and an optional token.
+  See [docs/MCP.md](docs/MCP.md#the-other-direction-mcp-servers-this-app-calls).
 - **Social tab** — make a short video from a title, an audio track and one picture (or a source
   video), then plan, schedule and measure it through Metricool: a unified inbox, a content
   calendar, the Meta/Google/TikTok ad panels and the reporting cards. See [docs/SOCIAL.md](docs/SOCIAL.md).

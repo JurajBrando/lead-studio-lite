@@ -1,3 +1,31 @@
+## [1.15.0] - 2026-11-15
+
+Downloading from an MCP server, and connecting any other sender platform.
+
+### Added
+
+- **Download** on a connected server (Settings → MCP connections). It runs the datasets the
+  connection declares and stores them in `mcp_items`, newest snapshot only. For Manyreach that is
+  **campaigns** (`campaign/get`) and **senders** (`sender/get`) — 30 of each on the account this
+  was tested against — shown as two lists in the card.
+- **Add another MCP server**: a name, an MCP URL and an optional token. With a token the calls go
+  out as `Authorization: Bearer` directly (no OAuth); without one the browser sign-in is used.
+  Instantly (`https://mcp.instantly.ai/mcp/<key>`), lemlist and Apify (OAuth) work that way.
+  Smartlead publishes SSE only, which this client does not speak, and the card says so.
+- `POST /api/mcp/pull`, `GET /api/mcp/items`, `POST /api/mcp/custom`.
+
+### Changed
+
+- Every generic call now carries the `intent` object Manyreach requires
+  (`{objective, step}` — a business objective, never personal data), which its `read`/`create`/
+  `update`/`delete`/`act` tools validate before doing anything.
+
+### Tests
+
+353 (was 345): the JSON body behind the header line, the campaign/sender field mapping, a download
+that stores and then replaces its snapshot, a failed download, and custom servers with a token, a
+bad URL and a reserved name.
+
 ## [1.14.0] - 2026-11-15
 
 The app as an MCP **client**: a connection to Manyreach, and a generic way to add the next one.
