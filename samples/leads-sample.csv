@@ -1,0 +1,9 @@
+email,first_name,last_name,company,title,city,country,industry,linkedin
+marta.novak@northline-logistics.example.com,Marta,Novak,Northline Logistics,Head of Operations,Rotterdam,Netherlands,logistics,https://www.linkedin.com/in/example-marta
+tomas.horvath@vertexdental.example.com,Tomas,Horvath,Vertex Dental Group,Practice Manager,Munich,Germany,dental,
+elena.kovac@lumeninteriors.example.com,Elena,Kovac,Lumen Interiors,Founder,Vienna,Austria,interiors,
+daniel.bauer@kestrelanalytics.example.com,Daniel,Bauer,Kestrel Analytics,CTO,Prague,Czechia,analytics,
+petra.schmidt@bluepineclinics.example.com,Petra,Schmidt,Bluepine Clinics,Clinic Director,Bratislava,Slovakia,healthcare,
+lukas.dubois@harborgrain.example.com,Lukas,Dubois,Harbor & Grain,Owner,Hamburg,Germany,food,
+sofia.rossi@stonebridgelegal.example.com,Sofia,Rossi,Stonebridge Legal,Partner,Warsaw,Poland,legal,
+martin.andersen@aurorafitness.example.com,Martin,Andersen,Aurora Fitness,Managing Director,Budapest,Hungary,fitness,

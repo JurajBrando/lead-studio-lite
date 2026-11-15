@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ls-token" content="__LS_TOKEN__">
+<meta name="color-scheme" content="dark">
+<title>Lead Studio Lite</title>
+<link rel="icon" href="favicon.svg">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div>
+        <div class="brand-name">Lead Studio Lite</div>
+        <div class="brand-ver" id="brand-ver">local-first SDR</div>
+      </div>
+    </div>
+
+    <div class="nav-label">Workspace</div>
+    <div class="nav-item" data-nav="dashboard"><span class="ico" data-ico="grid"></span>Dashboard</div>
+    <div class="nav-item" data-nav="leads"><span class="ico" data-ico="users"></span>Leads<span class="count" id="nav-leads">0</span></div>
+    <div class="nav-item" data-nav="sequences"><span class="ico" data-ico="flow"></span>Sequences<span class="count" id="nav-seqs">0</span></div>
+    <div class="nav-item" data-nav="inbox"><span class="ico" data-ico="mail"></span>Inbox<span class="count" id="nav-inbox">0</span></div>
+    <div class="nav-item" data-nav="daily"><span class="ico" data-ico="pulse"></span>Daily info<span class="count" id="nav-signals">0</span></div>
+    <div class="nav-item" data-nav="offers"><span class="ico" data-ico="tag"></span>Toolbox<span class="count" id="nav-offers">0</span></div>
+    <div class="nav-item" data-nav="social"><span class="ico" data-ico="video"></span>Social</div>
+
+    <div class="nav-label">Setup</div>
+    <div class="nav-item" data-nav="mailboxes"><span class="ico" data-ico="send"></span>Mailboxes</div>
+    <div class="nav-item" data-nav="settings"><span class="ico" data-ico="cog"></span>Settings</div>
+
+    <div class="sidebar-foot" id="side-foot">
+      <div><span class="dot" id="worker-dot"></span><span id="worker-text">starting...</span></div>
+      <div class="dim" style="margin-top:6px">Everything stays on this computer.</div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div id="view"><div class="empty"><p>Loading...</p></div></div>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

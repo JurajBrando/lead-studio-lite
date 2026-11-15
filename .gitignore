@@ -1,0 +1,32 @@
+# Local data - never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build output
+build/
+dist/
+*.spec
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Generated artefacts
+*.log
+
+# Personal working copy - never commit
+PERSONAL_README.md
+_e2e/
