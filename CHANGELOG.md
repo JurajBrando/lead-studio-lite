@@ -1,3 +1,35 @@
+## [1.26.0] - 2026-11-15
+
+From the index to the page: contacts out of the Common Crawl archive.
+
+### Added
+
+- **`engine/cc_warc.py`**: one record, fetched by byte range. The index row gives
+  `warc_filename`, `warc_record_offset` and `warc_record_length`; a single Range request to
+  `data.commoncrawl.org` returns that record, which is gunzipped, split into WARC and HTTP
+  headers, and decoded with the page's own charset. `contacts_of()` then extracts addresses
+  (including Cloudflare-obfuscated ones) and phones with the same cleaners the live crawler uses.
+- **`cc_index.pages(domain)`**: the archived pages of one domain, with their WARC coordinates —
+  contact/about/impressum pages first, the homepage next, failures and redirects skipped.
+- **New job "Contacts from the Common Crawl archive"** in the Domains group (daily 09:30): for
+  domains that have an index match but no contact yet, it takes up to four pages, fetches each
+  record, extracts the address and creates the lead. It works for sites that are parked, dead or
+  refuse bots — exactly the tail the live contact finder leaves behind.
+- The Domains stage now runs: new domains → MX → footprint → host index → **bulk index match** →
+  live contact finder → **contacts from the archive**.
+
+### Verified live
+
+Found `https://infografia-pedrojimenez.blogspot.com/p/contacto.html` in the local 300-shard index
+(2.6 s), fetched its 18 569-byte record from `data.commoncrawl.org` in 0.5 s, parsed it
+(`200`, `text/html`) and extracted `pedjima@hotmail.com`.
+
+### Tests
+
+440 (was 431): a gzipped and an uncompressed record, a non-record, contact extraction and page
+ranking, and the page lookup (domain filter, status filter, ordering, the WARC coordinates, an
+absent domain).
+
 ## [1.25.0] - 2026-11-15
 
 The Common Crawl index itself, matched locally or from Hugging Face.

@@ -194,3 +194,59 @@ def pending(limit=25):
     return [row["domain"] for row in db.rows(
         "SELECT domain FROM domains WHERE cc_checked_ts=0 AND domain<>'' "
         "ORDER BY first_seen_ts DESC LIMIT ?", (limit,))]
+
+
+PAGE_FIELDS = ("url", "url_host_registered_domain", "fetch_time", "fetch_status",
+               "warc_filename", "warc_record_offset", "warc_record_length")
+
+
+def pages(domain, bands=None, repo=REPO, crawl="", local_dir="", max_pages=6, status=200):
+    """The archived pages of one domain, with the WARC coordinates to fetch each one.
+
+    Contact/about pages come first, then the homepage, then whatever is left - a domain usually
+    publishes its address on one of those.
+    """
+    from . import cc_warc
+    domain = str(domain or "").strip().lower()
+    if not domain:
+        return []
+    key = surtkey(domain)
+    plan = []
+    if bands:
+        plan = [band["path"] for band in locate(key, bands)]
+        if local_dir:
+            plan = [os.path.join(local_dir, os.path.basename(path)) for path in plan]
+            plan = [path for path in plan if os.path.exists(path)]
+    elif local_dir:
+        plan = sorted(glob.glob(os.path.join(local_dir, "*.parquet")))
+    else:
+        plan = [band["path"] for band in locate(key, load_bands(repo, crawl))]
+
+    found = []
+    opener = (lambda path: open(path, "rb")) if local_dir else \
+        (lambda path: _fs().open("datasets/%s/%s" % (repo, path), "rb"))
+    for path in plan:
+        with opener(path) as handle:
+            parquet = _pf(handle)
+            columns = [name for name in PAGE_FIELDS if name in parquet.schema_arrow.names]
+            for batch in parquet.iter_batches(batch_size=200000, columns=columns):
+                data = {name: batch.column(index).to_pylist()
+                        for index, name in enumerate(columns)}
+                hosts = data.get("url_host_registered_domain") or []
+                for position, host in enumerate(hosts):
+                    if host != domain:
+                        continue
+                    if status and data.get("fetch_status") and data["fetch_status"][position] != status:
+                        continue
+                    if not (data.get("warc_filename") or [""])[position]:
+                        continue
+                    found.append({
+                        "url": (data.get("url") or [""])[position],
+                        "fetch_time": (data.get("fetch_time") or [None])[position],
+                        "warc_filename": data["warc_filename"][position],
+                        "offset": int((data.get("warc_record_offset") or [0])[position] or 0),
+                        "length": int((data.get("warc_record_length") or [0])[position] or 0)})
+    found.sort(key=lambda page: (cc_warc.page_score(page["url"]),
+                                 -(page["fetch_time"].timestamp()
+                                   if hasattr(page["fetch_time"], "timestamp") else 0)))
+    return found[:max_pages]
