@@ -1,3 +1,28 @@
+## [1.25.0] - 2026-11-15
+
+The Common Crawl index itself, matched locally or from Hugging Face.
+
+### Added
+
+- **`engine/cc_index.py`**: match domains against the Common Crawl **columnar URL index**
+  (`url_surtkey`, `url_host_registered_domain`, `fetch_time`, `fetch_status`, `warc_*`) without
+  keeping 170 GB on disk. Each shard covers a narrow band of the URL sort key, so the module caches
+  every shard's band from its Parquet footer (300 shards take ~0.3 s from disk, one footer read
+  each), finds the shard whose band can hold `com,example`, and reads only that shard's three
+  useful columns. Bands are cached in the `cc_bands` table.
+- Sources: **Hugging Face** `open-index/ccrawl-urls` (303 shards, 161.7 GB, `CC-MAIN-2026-25`) by
+  default, or a **local folder** with the same schema (`path` parameter, e.g. an `M:\index` copy).
+- **New job "Common Crawl: bulk domain match (index)"** in the Domains group (daily 03:30, 25
+  domains a run): matches the domains that have no lookup yet and writes `cc_pages`,
+  `cc_last_crawl` and `cc_checked_ts`. It sits after the per-domain footprint job, which stays the
+  better choice for a handful of domains because it needs no shard read at all.
+
+### Tests
+
+431 (was 424): the reversed key, band location (including a band that starts with the key), the
+aggregation of pages / last capture / 200s from a real Parquet shard, what is written to `domains`,
+a domain that is not in the index still being marked checked, and the pending queue.
+
 ## [1.24.0] - 2026-11-15
 
 The Daily page runs in the order the data actually flows.

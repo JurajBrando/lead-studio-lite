@@ -98,7 +98,8 @@ GROUP_ORDER = ("Domains", "Signals", "Data", "AI")
 # whether the site is real, then the contact finder looks for an address. The clock times are
 # the user's; this is only the order the page shows them in.
 CHAIN_ORDER = {
-    "new_domains": 10, "domain_mx": 20, "commoncrawl": 30, "cc_hf": 35, "contact_finder": 40,
+    "new_domains": 10, "domain_mx": 20, "commoncrawl": 30, "cc_hf": 35, "cc_bulk": 38,
+    "contact_finder": 40,
     "phishing_watch": 10, "hiring_signals": 20, "bankruptcy_watch": 30, "brand_watch": 40,
     "ads_transparency": 50,
     "merge_files": 10,
