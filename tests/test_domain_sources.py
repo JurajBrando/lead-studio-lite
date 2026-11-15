@@ -131,5 +131,59 @@ class DomainEndpointTests(unittest.TestCase):
         self.assertFalse(self.server.r_domain_scrape({"domain": "not a domain"})["ok"])
 
 
+class LeadDomainSyncTests(unittest.TestCase):
+    """Every lead's domain belongs in the catalogue, email or no email."""
+
+    def setUp(self):
+        db.init_db()
+        db.execute("DELETE FROM domains WHERE source='lead'")
+        for domain in ("only-domain-test.com", "email-only-test.com", "ensure-test.com"):
+            db.execute("DELETE FROM domains WHERE domain=?", (domain,))
+            db.execute("DELETE FROM leads WHERE domain=?", (domain,))
+
+    def tearDown(self):
+        for domain in ("only-domain-test.com", "email-only-test.com", "ensure-test.com"):
+            db.execute("DELETE FROM domains WHERE domain=?", (domain,))
+            db.execute("DELETE FROM leads WHERE domain=?", (domain,))
+
+    def test_a_lead_with_only_a_domain_lands_in_the_catalogue(self):
+        db.insert("leads", {"email": "", "domain": "only-domain-test.com",
+                            "company": "Only Domain", "created_ts": db.now(),
+                            "updated_ts": db.now()})
+        result = ds.sync_lead_domains()
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(result["added"], 1)
+        row = db.one("SELECT * FROM domains WHERE domain='only-domain-test.com'")
+        self.assertEqual(row["source"], "lead")
+        self.assertEqual(row["tld"], "com")
+
+    def test_an_email_only_lead_contributes_its_domain(self):
+        from engine import importer
+        importer.import_data("emails.csv", b"email\nsomeone@email-only-test.com\n")
+        ds.sync_lead_domains()
+        self.assertTrue(db.one("SELECT domain FROM domains WHERE domain='email-only-test.com'"))
+
+    def test_the_sync_does_not_duplicate(self):
+        db.insert("leads", {"email": "", "domain": "only-domain-test.com",
+                            "created_ts": db.now(), "updated_ts": db.now()})
+        first = ds.sync_lead_domains()
+        self.assertGreaterEqual(first["added"], 1)
+        second = ds.sync_lead_domains()
+        self.assertEqual(second["added"], 0)
+
+    def test_ensure_domain_adds_once_and_normalises(self):
+        self.assertEqual(ds.ensure_domain("https://www.Ensure-Test.com/x"), "ensure-test.com")
+        self.assertEqual(ds.ensure_domain("ensure-test.com"), "")
+        self.assertTrue(db.one("SELECT domain FROM domains WHERE domain='ensure-test.com'"))
+
+    def test_the_endpoint_runs_the_sync(self):
+        from engine import server
+        db.insert("leads", {"email": "", "domain": "only-domain-test.com",
+                            "created_ts": db.now(), "updated_ts": db.now()})
+        answer = server.r_domain_sync({})
+        self.assertTrue(answer["ok"])
+        self.assertGreaterEqual(answer["added"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

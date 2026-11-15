@@ -41,7 +41,8 @@ built-in data enrichment.
   datasets on Hugging Face — Common Crawl web graph (370M, ranked), registered domains (~180M),
   daily Certificate Transparency — enrich any of them against the live Common Crawl index, or
   scrape the site for contact details and add what it finds as a lead. The weekly Common Crawl
-  job also feeds it from the CC host index.
+  job also feeds it from the CC host index, and **Import lead domains** pulls the domain of every
+  lead you already have — with an email or with only a domain.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks

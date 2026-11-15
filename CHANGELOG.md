@@ -1,3 +1,21 @@
+## [1.11.1] - 2026-11-15
+
+Every lead's domain now reaches the catalogue.
+
+### Added
+
+- **Import lead domains** (*Domains* tab, `POST /api/domain/sync`): one pass copies the distinct
+  domain of every lead into `domains` — including the leads that have no email and only a domain
+  (49,130 of them in the current database, 80,691 domains in total, in about five seconds).
+  Running it again adds nothing.
+- The same sync runs after every import (uploaded file or path on disk), and saving a lead puts
+  its domain in the catalogue straight away, so the tab never misses a site you already know.
+
+### Tests
+
+307 (was 302): a lead with only a domain, a lead with only an email, the sync being idempotent,
+`ensure_domain` normalising a URL and refusing a second insert, and the endpoint.
+
 ## [1.11.0] - 2026-11-15
 
 A **Domains** tab: a catalogue of domains, three open-data feeds, Common Crawl enrichment and

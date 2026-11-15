@@ -509,6 +509,7 @@
     var s = q.stats || {};
     var html = pageHead('Domains', num(q.total) +
       ' domains in the catalogue - pulled from open data, enriched with Common Crawl.',
+      '<button class="btn" data-act="domain-sync">Import lead domains</button>' +
       '<button class="btn" data-act="domain-enrich">Check Common Crawl</button>' +
       '<button class="btn" data-act="domain-refresh">Refresh</button>');
 
@@ -568,7 +569,8 @@
               '</td></tr>';
           }).join('') + '</tbody></table></div>'
         : '<div class="empty"><div class="big">No domains yet</div><p>Pull a slice from one of the ' +
-          'sources above, or let the weekly Common Crawl job add them.</p></div>') +
+          'sources above, press <strong>Import lead domains</strong> to take the domain of every ' +
+          'lead you already have (with an email or not), or let the weekly Common Crawl job add them.</p></div>') +
       '</div>';
 
     html += '<div class="toolbar mt"><span class="small dim">Page ' + q.page + ' of ' + q.pages + '</span>' +
@@ -1918,6 +1920,16 @@
     import: function () { importModal(); },
     'bulk-data': function () { bulkDataModal(); },
     'domain-refresh': function () { loadDomains(); },
+    'domain-sync': function (el) {
+      if (el) el.disabled = true;
+      call('/api/domain/sync', {}).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) return toast(r.error || 'Could not read the leads', 'err');
+        toast(r.added ? (num(r.added) + ' domains added from leads')
+          : 'Every lead domain is already in the catalogue');
+        loadDomains();
+      });
+    },
     'domain-pull': function (el) {
       var source = el.dataset.source;
       var input = $('#pull-' + source);
@@ -2268,6 +2280,7 @@
       (r.invalid ? num(r.invalid) + ' invalid addresses. ' : '') +
       (r.updated ? num(r.updated) + ' existing leads updated. ' : '') +
       (r.skipped_blank ? num(r.skipped_blank) + ' rows had nothing to identify them. ' : '') +
+      (r.lead_domains ? num(r.lead_domains) + ' of their domains added to the catalogue. ' : '') +
       (r.stopped_at_limit ? 'Stopped at the row limit. ' : '') +
       '<div class="small dim" style="margin-top:6px">Mapped: ' +
       h(Object.keys(r.mapped || {}).join(', ') || 'nothing') +

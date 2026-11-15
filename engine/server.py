@@ -176,6 +176,8 @@ def r_lead_save(p):
             fields["verify_status"] = "unverified" if email else "none"
         fields["updated_ts"] = ts
         db.update("leads", lead_id, fields)
+        domain_sources.ensure_domain(
+            fields.get("domain") or merged.get("domain") or (email.rsplit("@", 1)[-1] if email else ""))
         return {"ok": True, "id": lead_id}
     for key in LEAD_FIELDS:
         fields.setdefault(key, "")
@@ -183,6 +185,7 @@ def r_lead_save(p):
     fields.update({"created_ts": ts, "updated_ts": ts,
                    "verify_status": "unverified" if email else "none"})
     new_id = db.insert("leads", fields)
+    domain_sources.ensure_domain(fields.get("domain") or (email.rsplit("@", 1)[-1] if email else ""))
     return {"ok": True, "id": new_id}
 
 
@@ -252,10 +255,13 @@ def r_lead_import(p):
     else:
         return {"ok": False, "error": "No file received."}
     try:
-        return importer.import_data(name, raw, source="import",
-                                    update_existing=bool(p.get("update_existing")),
-                                    mark_status=p.get("status") or "new",
-                                    only_email=bool(p.get("only_email")))
+        result = importer.import_data(name, raw, source="import",
+                                      update_existing=bool(p.get("update_existing")),
+                                      mark_status=p.get("status") or "new",
+                                      only_email=bool(p.get("only_email")))
+        if result.get("ok"):
+            result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
+        return result
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -285,10 +291,13 @@ def r_lead_import_path(p):
         return {"ok": False, "error": "The row limit must be a number."}
     limit = max(1, min(limit, 500000))
     try:
-        return importer.import_path(
+        result = importer.import_path(
             p.get("path") or "", table=str(p.get("table") or ""), where=str(p.get("where") or ""),
             limit=limit, update_existing=bool(p.get("update_existing")),
             mark_status=p.get("status") or "new", only_email=bool(p.get("only_email")))
+        if result.get("ok"):
+            result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
+        return result
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -727,6 +736,11 @@ def r_domain_list(q):
     return {"ok": True, "domains": rows, "total": total, "page": page,
             "pages": max(1, (total + per - 1) // per),
             "stats": _domain_stats(), "sources": domain_sources.describe()}
+
+
+def r_domain_sync(p):
+    """Copy every lead's domain into the catalogue - including leads that only have one."""
+    return domain_sources.sync_lead_domains()
 
 
 def r_domain_pull(p):
@@ -1248,6 +1262,7 @@ ROUTES_POST = {
     "/api/lead/inspect": r_lead_inspect,
     "/api/dialog/pick": r_pick_file,
     "/api/domain/pull": r_domain_pull,
+    "/api/domain/sync": r_domain_sync,
     "/api/domain/enrich": r_domain_enrich,
     "/api/domain/scrape": r_domain_scrape,
     "/api/lead/verify": r_lead_verify,

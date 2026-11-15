@@ -259,3 +259,38 @@ def pull(source, limit=5000, crawl="", day=""):
         return {"ok": False, "error": "Could not read %s: %s" % (source, exc)}
     db.event("domains", "%s: +%d domains, %d already known" % (source, added, known))
     return {"ok": True, "source": source, "added": added, "known": known, "limit": limit}
+
+
+def ensure_domain(domain, source="lead"):
+    """Put one domain in the catalogue if it is not there. Returns the domain or ''."""
+    value = net.domain_of(domain) or ""
+    if not value or "." not in value:
+        return ""
+    if db.one("SELECT domain FROM domains WHERE domain=?", (value,)):
+        return ""
+    now = db.now()
+    db.insert("domains", {"domain": value, "tld": value.rsplit(".", 1)[-1], "source": source,
+                          "first_seen_ts": now, "updated_ts": now})
+    return value
+
+
+def sync_lead_domains(limit=200000):
+    """Every lead's domain belongs in the catalogue - with an email, or with only a domain.
+
+    A lead imported from a `domain` column and nothing else still names a site worth
+    checking; this copies those domains into `domains` once, so the tab can enrich them.
+    """
+    names = [row["domain"] for row in db.rows(
+        "SELECT DISTINCT lower(trim(domain)) AS domain FROM leads "
+        "WHERE trim(coalesce(domain,''))<>'' AND lower(trim(domain)) NOT IN "
+        "(SELECT domain FROM domains) LIMIT ?", (int(limit),))]
+    names = [name for name in names if name and "." in name]
+    if not names:
+        return {"ok": True, "added": 0}
+    now = db.now()
+    records = [{"domain": name, "tld": name.rsplit(".", 1)[-1], "source": "lead",
+                "first_seen_ts": now, "updated_ts": now} for name in names]
+    for start in range(0, len(records), 500):
+        db.insert_many("domains", records[start:start + 500])
+    db.event("domains", "lead domains: +%d in the catalogue" % len(records))
+    return {"ok": True, "added": len(records)}
