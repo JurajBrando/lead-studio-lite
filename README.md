@@ -94,6 +94,11 @@ inbox permissions, or anyone looking for a managed data vendor.
 - **Brand watch** — monitor any number of business domains for lookalikes, typosquats and scam
   clones: registered lookalike names, new registrations and phishing listings, with a per-brand case
   file and CSV export. See [docs/BRAND_WATCH.md](docs/BRAND_WATCH.md).
+- **Ads hub** — a page with a sub-tab per platform: Metricool Ads (the ad accounts it already
+  reads), HYROS Ad Tracking (`API-Key`), PLAI and DataFast (`Bearer`). Each keeps its own key and
+  base URL, has a *Test* and a raw *Pull*. **HYROS AIR Sales Agent** gets its own tab as the client
+  for Hyros' paid add-on: it reads the leads, sales and calls behind your HYROS key and states
+  plainly that AIR itself runs at Hyros.
 - **MCP server** — `leadstudio_mcp.py` lets Claude Desktop or any MCP client search leads, import
   CSVs, run jobs and read signals. See [docs/MCP.md](docs/MCP.md).
 - **MCP connections** — the app is an MCP *client* too: Settings → *MCP connections* connects a

@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -102,6 +102,9 @@ def r_state():
                 "offers": db.scalar("SELECT COUNT(*) FROM offers"),
                 "offers_active": db.scalar("SELECT COUNT(*) FROM offers WHERE active=1")},
             "llm": llm.status(),
+            "ads": ads.status_all(),
+            "offers": [{"id": row["id"], "name": row["name"]}
+                       for row in db.rows("SELECT id, name FROM offers WHERE active=1 ORDER BY id")],
             "mcp": mcp_client.status_all(),
             "manyreach": manyreach_api.status(),
             "oauth": oauth.status()}
@@ -293,6 +296,43 @@ def r_mcp_disconnect(p):
         return mcp_client.disconnect(str(p.get("name") or ""))
     except mcp_client.McpError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def r_ads(q=None):
+    return {"ok": True, "platforms": ads.status_all()}
+
+
+def r_ads_save(p):
+    try:
+        return ads.save(p.get("name") or "", p)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_ads_test(p):
+    try:
+        return ads.test(p.get("name") or "")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_ads_pull(p):
+    try:
+        return ads.pull(p.get("name") or "", p.get("path") or "")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_hyros_status(q=None):
+    return {"ok": True, **hyros_air.status()}
+
+
+def r_hyros_pull(p):
+    return hyros_air.pull(p.get("kind") or "leads", int(p.get("limit") or 100))
+
+
+def r_hyros_paths(p):
+    return hyros_air.save_paths(p.get("paths") or {})
 
 
 def r_lead_save(p):
@@ -1423,6 +1463,8 @@ ROUTES_GET = {
     "/api/mcp/status": r_mcp_status,
     "/api/mcp/items": r_mcp_items,
     "/api/manyreach/status": r_manyreach_status,
+    "/api/ads": r_ads,
+    "/api/hyros": r_hyros_status,
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
@@ -1457,6 +1499,12 @@ ROUTES_POST = {
     "/api/manyreach/key": r_manyreach_key,
     "/api/manyreach/sync": r_manyreach_sync,
     "/api/manyreach/import": r_manyreach_import,
+    "/api/ads/save": r_ads_save,
+    "/api/ads/test": r_ads_test,
+    "/api/ads/pull": r_ads_pull,
+    "/api/hyros": r_hyros_status,
+    "/api/hyros/pull": r_hyros_pull,
+    "/api/hyros/paths": r_hyros_paths,
     "/api/mcp/disconnect": r_mcp_disconnect,
     "/api/lead/verify": r_lead_verify,
     "/api/sequence/save": r_seq_save,

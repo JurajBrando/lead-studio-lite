@@ -1,3 +1,35 @@
+## [1.20.0] - 2026-11-15
+
+An Ads tab at the bottom, and HYROS AIR as the paid service it is.
+
+### Added
+
+- **Ads** in the sidebar, under Social — one page, a sub-tab per platform:
+  - **Metricool Ads**: the ad-account pane from Social, reused.
+  - **HYROS Ad Tracking**: `https://api.hyros.com/v1` with the `API-Key` header.
+  - **PLAI**: its API access is per account, so the base URL is yours to paste.
+  - **DataFast**: `https://datafa.st/api` with a `Bearer` token.
+  Each API tab keeps its own key, base URL and optional path in `data/settings.json`, offers
+  *Test* and *Pull*, and shows the raw JSON that came back. No endpoint is guessed.
+- **HYROS AIR Sales Agent** in the sidebar, below Ads: a **client** for the paid Hyros add-on.
+  The page states that AIR is sold by Hyros and runs there, and reads the leads, sales and calls
+  behind your HYROS API key (the same key as the Ad Tracking tab) with pull buttons and a table.
+  The paths come from the Hyros API and are editable if they change.
+- `/api/ads`, `/api/ads/save|test|pull`, `/api/hyros`, `/api/hyros/pull|paths`; `engine/ads.py`
+  and `engine/hyros_air.py`.
+
+### Removed
+
+- The local "sales agent" that briefly lived in this branch: it answered with your own LLM
+  provider (OpenRouter while developing), which is not HYROS AIR and must not be presented as it.
+  The tab now reads the real service instead.
+
+### Tests
+
+412 (was 394): the four platforms, a key that is stored but never returned, the HYROS `API-Key`
+header versus the DataFast bearer, HTTP errors, a platform with no base URL, and the HYROS AIR
+client refusing to pull without a key or with an unknown collection.
+
 ## [1.19.0] - 2026-11-15
 
 What you download lands in the app: senders become mailboxes, campaigns become sequences.

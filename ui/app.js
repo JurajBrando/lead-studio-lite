@@ -38,7 +38,8 @@
     target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/></svg>',
     pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></svg>',
     video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 10.5 5-3v9l-5-3v-3Z"/></svg>',
-    globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>'
+    globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>',
+    sparkles: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.5 13.7 9l5.3 1.7-5.3 1.8L12 18l-1.7-5.5L5 10.7 10.3 9 12 3.5Z"/><path d="M18.5 16.5 19.2 19l2.3.7-2.3.8-.7 2.5-.8-2.5-2.2-.8 2.2-.7.8-2.5Z"/></svg>'
   };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -252,6 +253,8 @@
     else if (state.view === 'offers') html = viewOffers(d);
     else if (state.view === 'match') html = viewMatch(d);
     else if (state.view === 'mailboxes') html = viewMailboxes(d);
+    else if (state.view === 'ads') html = viewAds(d);
+    else if (state.view === 'agent') html = viewAgent(d);
     else if (state.view === 'settings') html = viewSettings(d);
     else if (state.view === 'social') {
       if (!state.social) {
@@ -273,6 +276,8 @@
     if (state.view === 'mailboxes') wireMailboxes();
     if (state.view === 'inbox') wireInbox();
     if (state.view === 'sequences') wireSequences();
+    if (state.view === 'ads') wireAds();
+    if (state.view === 'agent') wireAgent();
   }
 
   function pageHead(title, sub, actions) {
@@ -1199,6 +1204,117 @@
       }
     });
   }
+
+  // ---- ads: one page, one tab per platform
+  var ADS_TABS = [
+    { key: 'metricool', label: 'Metricool Ads' },
+    { key: 'hyros', label: 'HYROS Ad Tracking' },
+    { key: 'plai', label: 'PLAI' },
+    { key: 'datafast', label: 'DataFast' }
+  ];
+
+  function viewAds(d) {
+    var tab = state.adsTab || 'metricool';
+    var html = pageHead('Ads',
+      'The advertising stack in one place: Metricool for the ad accounts, then the tracking and ' +
+      'management tools on their own sub-tab.');
+    html += '<div class="toolbar" style="margin-bottom:12px">' + ADS_TABS.map(function (t) {
+      return '<button class="btn sm ' + (tab === t.key ? 'primary' : 'ghost') +
+        '" data-act="ads-tab" data-tab="' + t.key + '">' + h(t.label) + '</button>';
+    }).join('') + '</div>';
+    if (tab === 'metricool') {
+      html += state.social
+        ? '<div id="ads-metricool">' + svBodyAds() + '</div>'
+        : '<div class="callout"><strong>Metricool loads with the Social tab.</strong> ' +
+          '<button class="btn sm" data-act="ads-social">Load the connection here</button></div>';
+    } else {
+      var platform = (d.ads || []).filter(function (p) { return p.name === tab; })[0];
+      html += platform ? adsPlatformCard(platform)
+        : '<div class="small dim">That platform is not defined.</div>';
+    }
+    html += '<div id="ads-out" class="mt"></div>';
+    return html;
+  }
+
+  function adsPlatformCard(p) {
+    return '<div class="card"><div class="card-head"><h2>' + h(p.label) + '</h2>' +
+      '<div class="spacer"></div>' +
+      '<span class="badge ' + (p.has_key ? 'green' : 'grey') + '">' +
+      (p.has_key ? 'key saved' : 'no key') + '</span>' +
+      (p.last_test ? ' <span class="badge ' + (p.last_ok ? 'green' : 'red') + '">' +
+        (p.last_ok ? 'last test ok' : 'last test failed') + '</span>' : '') +
+      '</div><div class="small muted">' + h(p.note) + ' <a href="' + h(p.docs) +
+      '" target="_blank" rel="noopener">Docs</a></div>' +
+      '<div class="row"><div class="field"><label>API key</label>' +
+      '<input type="password" id="ads-key" placeholder="' +
+      (p.has_key ? 'a key is saved - paste a new one to replace it' : 'paste the key') + '"></div>' +
+      '<div class="field" style="max-width:180px"><label>Auth header</label>' +
+      '<input type="text" value="' + h(p.auth) + '" disabled></div></div>' +
+      '<div class="row"><div class="field"><label>Base URL</label>' +
+      '<input type="text" id="ads-base" value="' + h(p.base_url) + '" placeholder="https://..."></div>' +
+      '<div class="field"><label>Path <span class="dim">(optional)</span></label>' +
+      '<input type="text" id="ads-path" value="' + h(p.path) + '" placeholder="/leads"></div></div>' +
+      '<button class="btn primary" data-act="ads-save" data-name="' + p.name + '">Save</button> ' +
+      '<button class="btn" data-act="ads-test" data-name="' + p.name + '">Test</button> ' +
+      '<button class="btn" data-act="ads-pull" data-name="' + p.name + '">Pull</button>' +
+      '<div class="hint small dim">Nothing is guessed: the call goes to the base URL and path you ' +
+      'give, with ' + h(p.auth) + ' auth, and the raw JSON comes back below.</div></div>';
+  }
+
+  function wireAds() { }
+
+  // ---- HYROS AIR: a paid Hyros service, this page is its client
+  function loadHyros() {
+    return call('/api/hyros', {}).then(function (r) {
+      if (!r.ok) return;
+      state.hyros = r;
+      if (state.view === 'agent') render();
+    });
+  }
+
+  function viewAgent(d) {
+    var info = state.hyros;
+    var html = pageHead('HYROS AIR Sales Agent',
+      'HYROS AIR is a paid Hyros service - subscribe to it and manage it at Hyros. This page is ' +
+      'only the client: it reads what the agent did in your account with your HYROS API key.',
+      '<a class="btn" href="' + h((info && info.links && info.links.product) ||
+        'https://hyros.com/') + '" target="_blank" rel="noopener">Open Hyros</a>');
+    if (!info) {
+      setTimeout(loadHyros, 20);
+      return html + '<div class="card"><div class="small dim">Loading the HYROS connection...</div></div>';
+    }
+    html += '<div class="callout"><strong>What this is.</strong> HYROS AIR is an AI sales agent sold ' +
+      'by Hyros, not something this app runs. Everything it produces lives in your Hyros account, ' +
+      'and the HYROS API exposes it with the same key the Ad Tracking tab stores. Nothing on this ' +
+      'page is generated locally.</div>';
+    html += '<div class="card"><div class="card-head"><h2>Connection</h2><div class="spacer"></div>' +
+      '<span class="badge ' + (info.has_key ? 'green' : 'amber') + '">' +
+      (info.has_key ? 'HYROS API key saved' : 'no HYROS API key') + '</span></div>' +
+      '<div class="small muted">' + h(info.note) + '</div>' +
+      '<div class="small dim mono mt">' + h(info.base_url) + '</div>' +
+      (info.has_key
+        ? '<div class="toolbar mt">' +
+          ['leads', 'sales', 'calls'].map(function (kind) {
+            return '<button class="btn sm" data-act="hyros-pull" data-kind="' + kind + '">Pull ' +
+              h(kind) + (info.last_count ? '' : '') + '</button>';
+          }).join(' ') + '</div>' +
+          (info.last_pull ? '<div class="small dim">Last pull: ' + num(info.last_count) +
+            ' rows · ' + fmtWhen(info.last_pull) + '</div>' : '')
+        : '<div class="mt"><button class="btn primary" data-act="hyros-key">Add the HYROS API key</button>' +
+          '<div class="hint small dim">It is the same key as Ads → HYROS Ad Tracking.</div></div>') +
+      '</div>';
+    html += '<div id="hyros-out" class="mt"></div>';
+    html += '<details class="card mt"><summary class="small dim">Endpoint paths (from the Hyros ' +
+      'API, editable if they change)</summary><div class="row mt">' +
+      Object.keys(info.paths || {}).map(function (kind) {
+        return '<div class="field"><label>' + h(kind) + '</label>' +
+          '<input type="text" id="hyros-path-' + h(kind) + '" value="' + h(info.paths[kind]) + '"></div>';
+      }).join('') + '</div><button class="btn sm" data-act="hyros-paths">Save paths</button>' +
+      '</details>';
+    return html;
+  }
+
+  function wireAgent() { }
 
   // ---- offers (the money layer)
   function viewOffers(d) {
@@ -2440,6 +2556,96 @@
       });
     },
     import: function () { importModal(); },
+    'ads-tab': function (button) {
+      state.adsTab = button.dataset.tab;
+      render();
+    },
+    'ads-social': function () {
+      loadSocial().then(function () { render(); });
+    },
+    'ads-save': function (button) {
+      var name = button.dataset.name;
+      call('/api/ads/save', {
+        name: name, api_key: svVal('ads-key'), base_url: svVal('ads-base'), path: svVal('ads-path')
+      }).then(function (r) {
+        if (!r.ok) return toast(r.error || 'Could not save that', 'err');
+        toast('Saved');
+        refresh();
+      });
+    },
+    'ads-test': function (button) {
+      call('/api/ads/test', { name: button.dataset.name }).then(function (r) {
+        var out = $('#ads-out');
+        if (!r.ok) {
+          if (out) out.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' + h(r.error) + '</div>';
+          return toast(r.error || 'The test failed', 'err');
+        }
+        toast('Answered HTTP ' + r.status);
+        if (out) out.innerHTML = '<pre class="log">' + h(JSON.stringify(r.data, null, 1).slice(0, 4000)) + '</pre>';
+        refresh();
+      });
+    },
+    'ads-pull': function (button) {
+      var out = $('#ads-out');
+      if (out) out.innerHTML = '<div class="small dim">Calling ' + h(button.dataset.name) + '...</div>';
+      call('/api/ads/pull', { name: button.dataset.name, path: svVal('ads-path') }).then(function (r) {
+        if (!out) return;
+        if (!r.ok) {
+          out.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' + h(r.error) + '</div>';
+          return;
+        }
+        out.innerHTML = '<div class="small dim">' + h(r.url) + ' · HTTP ' + r.status + '</div>' +
+          '<pre class="log">' + h(JSON.stringify(r.data, null, 1).slice(0, 6000)) + '</pre>';
+      });
+    },
+    'hyros-key': function () {
+      state.adsTab = 'hyros';
+      go('ads');
+    },
+    'hyros-pull': function (button) {
+      var out = $('#hyros-out');
+      if (out) out.innerHTML = '<div class="small dim">Reading ' + h(button.dataset.kind) +
+        ' from Hyros...</div>';
+      call('/api/hyros/pull', { kind: button.dataset.kind, limit: 100 }).then(function (r) {
+        if (!r.ok) {
+          if (out) out.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
+            h(r.error) + '</div>';
+          return;
+        }
+        var rows = r.rows || [];
+        if (!out) return;
+        if (!rows.length) {
+          out.innerHTML = '<div class="small dim">Nothing came back. The raw answer:</div>' +
+            '<pre class="log">' + h(JSON.stringify(r.raw, null, 1).slice(0, 4000)) + '</pre>';
+          return;
+        }
+        var keys = Object.keys(rows[0]).slice(0, 6);
+        out.innerHTML = '<div class="card" style="background:var(--panel-2)"><div class="card-head">' +
+          '<h3>' + h(r.kind) + '</h3><div class="spacer"></div><span class="badge grey">' +
+          num(r.count) + '</span></div><div class="table-wrap"><table><thead><tr>' +
+          keys.map(function (k) { return '<th>' + h(k) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+          rows.slice(0, 100).map(function (row) {
+            return '<tr>' + keys.map(function (k) {
+              var value = row[k];
+              return '<td class="small">' + h(typeof value === 'object' && value !== null
+                ? JSON.stringify(value).slice(0, 80) : value) + '</td>';
+            }).join('') + '</tr>';
+          }).join('') + '</tbody></table></div></div>';
+        refresh();
+      });
+    },
+    'hyros-paths': function () {
+      var paths = {};
+      ['leads', 'sales', 'calls'].forEach(function (kind) {
+        var el = $('#hyros-path-' + kind);
+        if (el) paths[kind] = el.value;
+      });
+      call('/api/hyros/paths', { paths: paths }).then(function (r) {
+        if (!r.ok) return toast(r.error || 'Could not save', 'err');
+        toast('Saved');
+        loadHyros();
+      });
+    },
     'mr-save': function () {
       var key = svVal('mr-key');
       if (!key) return toast('Paste the API key first', 'err');
@@ -4381,7 +4587,7 @@
   }
 
 
-  var VIEWS = ['dashboard', 'leads', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'mailboxes', 'settings'];
+  var VIEWS = ['dashboard', 'leads', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'ads', 'agent', 'mailboxes', 'settings'];
 
   function go(view) {
     if (view === 'daily') view = 'signals';
