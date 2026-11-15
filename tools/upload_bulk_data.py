@@ -18,7 +18,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATASET = "JurajBrando/lead-studio-data"
+DATASET = "Jurajbrando/lead-studio-data"
 FILES = (
     # (name in the dataset, local path)
     ("domains.txt", os.path.join(os.path.dirname(ROOT), "domains", "domains.txt")),

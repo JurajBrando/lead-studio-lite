@@ -9,7 +9,7 @@ Nothing here uploads anything - the upload was a one-off command with a write to
 """
 from urllib.parse import quote
 
-DATASET = "JurajBrando/lead-studio-data"
+DATASET = "Jurajbrando/lead-studio-data"
 
 FILES = (
     {"name": "rec_results.duckdb", "label": "Scraped contact table",

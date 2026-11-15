@@ -34,7 +34,7 @@ built-in data enrichment.
   optional SQL filter for DuckDB.
 - **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) and the raw
   domain list (`domains.txt`) are too big for a repository, so they are published as the public
-  dataset [JurajBrando/lead-studio-data](https://huggingface.co/datasets/JurajBrando/lead-studio-data)
+  dataset [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data)
   and linked from *Leads → Bulk data*. The weekly Common Crawl job reads the CC host index from the
   same Hub to add domains you do not have yet. Re-publish them with
   `python tools/upload_bulk_data.py` (needs a write token).

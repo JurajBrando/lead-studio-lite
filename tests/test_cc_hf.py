@@ -20,7 +20,7 @@ from engine.jobs.base import Context  # noqa: E402
 class HfDataTests(unittest.TestCase):
     def test_the_links_point_at_the_dataset(self):
         info = hf_data.info()
-        self.assertEqual(info["dataset"], "JurajBrando/lead-studio-data")
+        self.assertEqual(info["dataset"], "Jurajbrando/lead-studio-data")
         self.assertTrue(info["url"].startswith("https://huggingface.co/datasets/"))
         names = [entry["name"] for entry in info["files"]]
         self.assertIn("rec_results.duckdb", names)
