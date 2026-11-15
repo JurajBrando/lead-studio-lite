@@ -1,3 +1,17 @@
+## [1.13.1] - 2026-11-15
+
+Ollama Cloud stopped being free on 9 November 2026 (free accounts moved to pay-as-you-go
+credits), so the app stops advertising it as a free option.
+
+### Changed
+
+- The Ollama preset is labelled **"Ollama (local; the cloud is paid since Nov 2026)"** and still
+  points at `http://127.0.0.1:11434/v1`, which is what actually runs without an account. The
+  Settings card says the same.
+- The 34 Ollama Cloud keys registered during testing were removed from the provider list. The
+  free OpenRouter model (`inclusionai/ling-3.2-flash:free`) stays as the default, and the pool
+  mechanism stays for any endpoint that ever has more than one key.
+
 ## [1.13.0] - 2026-11-15
 
 A provider pool: many keys on one endpoint, and one of them failing is no longer fatal.

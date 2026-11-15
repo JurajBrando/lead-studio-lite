@@ -1283,7 +1283,8 @@
         ? '<span class="badge green">' + h(s.default) + ' · ' + h(s.model) + '</span>'
         : '<span class="badge amber">none configured</span>') + '</div>' +
       '<div class="small muted" style="margin-bottom:10px">Bring your own model: OpenAI, Anthropic ' +
-      '(Claude), DeepSeek, Ollama (local or cloud) or any OpenAI-compatible endpoint. The default one ' +
+      '(Claude), DeepSeek, Ollama (local; the cloud is pay-as-you-go since Nov 2026) or any ' +
+      'OpenAI-compatible endpoint. The default one ' +
       'powers AI enrichment and pitch drafting. Providers that share a base URL act as one pool: a ' +
       'call rotates through the keys and moves on when one is out of quota.</div>' +
       (s.pooled ? '<div class="small dim" style="margin-bottom:10px">Pool: ' + s.pooled +
