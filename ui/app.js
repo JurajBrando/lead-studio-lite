@@ -365,6 +365,7 @@
       '<button class="btn" data-act="export-parquet">Parquet</button>' +
       '<button class="btn" data-act="export-duckdb">DuckDB</button>' +
       '<button class="btn" data-act="import">Import</button>' +
+      '<button class="btn" data-act="bulk-data">Bulk data</button>' +
       '<button class="btn primary" data-act="add-lead">Add lead</button>');
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
@@ -1760,6 +1761,7 @@
       });
     },
     import: function () { importModal(); },
+    'bulk-data': function () { bulkDataModal(); },
     export: function () { window.location.href = '/export.csv'; },
     'export-parquet': function () { window.location.href = '/export.parquet'; },
     'export-duckdb': function () { window.location.href = '/export.duckdb'; },
@@ -2240,6 +2242,32 @@
           });
         }
       }
+    });
+  }
+
+  // ---- bulk data (the files too big for the folder, published on Hugging Face)
+  function bulkDataModal() {
+    var hf = (state.data && state.data.hf) || {};
+    var files = hf.files || [];
+    openModal({
+      title: 'Bulk data on Hugging Face',
+      subtitle: 'The two files too big for this folder: the scraped contact table and the domain list.',
+      body: '<div class="small muted">Published as a public dataset at ' +
+        '<a href="' + h(hf.url || '#') + '" target="_blank" rel="noopener">' +
+        h(hf.dataset || 'huggingface.co') + '</a>. The Common Crawl job reads the host index ' +
+        'from the Hub as well, so new domains keep arriving.</div>' +
+        '<div class="list mt">' + files.map(function (f) {
+          return '<div class="list-item"><div class="avatar">' +
+            h((f.name || '?').slice(0, 2).toUpperCase()) + '</div>' +
+            '<div class="grow"><div><strong>' + h(f.label || f.name) + '</strong> ' +
+            '<span class="mono small dim">' + h(f.name) + '</span></div>' +
+            '<div class="small dim">' + h(f.note || '') + '</div></div>' +
+            '<a class="btn sm" href="' + h(f.url || '#') + '" target="_blank" rel="noopener">' +
+            'Download</a></div>';
+        }).join('') + '</div>' +
+        '<div class="small dim mt">Downloads land in your browser folder. To use one, ' +
+        'Leads &rarr; Import &rarr; File on this computer, and point it at the file.</div>',
+      footer: '<button class="btn" data-close>Close</button>'
     });
   }
 

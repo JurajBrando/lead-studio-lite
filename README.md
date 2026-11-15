@@ -32,6 +32,11 @@ built-in data enrichment.
   cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
   on disk — type it or press **Browse** for the system file window — streamed and capped, with an
   optional SQL filter for DuckDB.
+- **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) and the raw
+  domain list (`domains.txt`) are too big for a repository, so they are published as the public
+  dataset [JurajBrando/lead-studio-data](https://huggingface.co/datasets/JurajBrando/lead-studio-data)
+  and linked from *Leads → Bulk data*. The weekly Common Crawl job reads the CC host index from the
+  same Hub to add domains you do not have yet.
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks
@@ -129,6 +134,7 @@ by a job.
 | Google Ads Transparency | weekly Mon 07:30 | HuggingFace `najeh-halawani/google-ads-transparency` |
 | Hiring signals | daily 06:45 | HuggingFace `cleanfeeds/tech-jobs-daily` |
 | Common Crawl footprint | daily 03:00 | index.commoncrawl.org |
+| Common Crawl host index | weekly Sun 04:30 | HuggingFace `commoncrawl/host-index-testing-v2` |
 | Phishing / fraud watch | daily 05:30 | Phishing.Database |
 | Merge files into leads | daily 02:00 | your `data/imports/` folder |
 | Brand watch | daily 08:00 | DNS + new-domain feed + phishing lists |

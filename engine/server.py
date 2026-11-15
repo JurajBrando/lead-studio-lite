@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import brands, chat, connectors, demo, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
+from . import brands, chat, connectors, demo, hf_data, importer, llm, mail, match, metricool, net, oauth, offers, pipeline, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs.base import Context, Job
@@ -84,6 +84,7 @@ def r_state():
                       "not_affiliated": metricool.NOT_AFFILIATED,
                       "signup_url": metricool.SIGNUP_URL,
                       "licence": "MIT"},
+            "hf": hf_data.info(),
             "automation": {
                 "jobs": db.scalar("SELECT COUNT(*) FROM jobs"),
                 "enabled": db.scalar("SELECT COUNT(*) FROM jobs WHERE enabled=1"),

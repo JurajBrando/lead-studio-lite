@@ -7,7 +7,7 @@ import importlib
 
 from .base import Context, Job  # noqa: F401  (re-exported for job modules)
 
-MODULES = ("nrd", "mx", "bankruptcy", "merge", "ads", "hiring", "cc", "phishing",
+MODULES = ("nrd", "mx", "bankruptcy", "merge", "ads", "hiring", "cc", "cc_hf", "phishing",
            "contacts", "ai_enrich", "brand_watch")
 
 _cache = None

@@ -1,3 +1,30 @@
+## [1.10.3] - 2026-11-15
+
+Bulk data on Hugging Face, and Common Crawl in both directions.
+
+### Added
+
+- **Bulk data** (Leads -> *Bulk data*): download links for the two files that are too big for
+  this folder, published as the public dataset `JurajBrando/lead-studio-data` —
+  `rec_results.duckdb` (the scraped contact table) and `domains.txt` (the raw domain list).
+  The links come from `/api/state`, so they change in one place.
+- **`cc_hf` job — Common Crawl host index from Hugging Face.** Reads a shard of
+  `commoncrawl/host-index-testing-v2`, streamed with range reads, takes each host's registered
+  domain and adds the ones the `domains` table does not know yet (2000 per run, 200k rows
+  scanned), keeping the fetch statistics in `data`. Weekly, Sunday 04:30. The Hub mirror lags
+  the official index by months, so it only adds: the existing daily `commoncrawl` job still
+  checks every domain against the current crawl.
+
+### Changed
+
+- `engine/hf_data.py` is the one place that knows the dataset id and the file URLs.
+
+### Tests
+
+289 (was 280): the links, the registered-domain and SURT fallbacks, the store (de-duplication,
+stats, a second run adding nothing), and the job's missing-library message plus a run against a
+fake shard.
+
 ## [1.10.2] - 2026-11-15
 
 Metricool through the project's affiliate link, and the legal notice that goes with it.
