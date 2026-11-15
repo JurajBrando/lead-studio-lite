@@ -80,6 +80,10 @@ def r_state():
     return {"ok": True, "settings": public, "stats": pipeline.stats(), "mailboxes": mailboxes,
             "sequences": seqs, "worker": worker, "version": config.VERSION,
             "python": config.python_hint(), "port": PORT, "data_dir": config.DATA_DIR,
+            "legal": {"affiliate_note": metricool.AFFILIATE_NOTE,
+                      "not_affiliated": metricool.NOT_AFFILIATED,
+                      "signup_url": metricool.SIGNUP_URL,
+                      "licence": "MIT"},
             "automation": {
                 "jobs": db.scalar("SELECT COUNT(*) FROM jobs"),
                 "enabled": db.scalar("SELECT COUNT(*) FROM jobs WHERE enabled=1"),

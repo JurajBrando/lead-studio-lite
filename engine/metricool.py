@@ -27,6 +27,17 @@ from . import config
 MCP_URL = "https://ai.metricool.com/mcp"
 METADATA_URL = "https://ai.metricool.com/.well-known/oauth-authorization-server"
 APP_URL = "https://app.metricool.com"
+
+# The link the app sends people through when they still need an account. Every "go to
+# Metricool" link uses it, and it is disclosed on the settings page and in the README - an
+# affiliate link that is not disclosed is not worth the commission.
+SIGNUP_URL = "https://my.mtr.cool/NEMGNE"
+AFFILIATE_NOTE = (
+    "The Metricool links in this app are affiliate links: if you open a Metricool account "
+    "through one, this project may earn a commission at no extra cost to you.")
+NOT_AFFILIATED = (
+    "Lead Studio Lite is an independent project. It is not affiliated with, endorsed by or "
+    "sponsored by Metricool or any other service it connects to.")
 SCOPE = "mcp:read mcp:write"
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_NAME = "Lead Studio Lite"
@@ -122,6 +133,8 @@ def status():
         "connected_at": int(block.get("connected_at") or 0),
         "mcp_url": MCP_URL,
         "app_url": APP_URL,
+        "signup_url": SIGNUP_URL,
+        "affiliate_note": AFFILIATE_NOTE,
         "note": "Free plan: 1 brand, 20 posts a month, 30 days of analytics, no LinkedIn or X.",
     }
 

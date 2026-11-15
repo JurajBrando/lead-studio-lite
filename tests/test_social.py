@@ -379,6 +379,13 @@ class MetricoolTokenTests(unittest.TestCase):
         self.assertFalse(status["connected"])
         self.assertIn("Free", status["note"])
 
+    def test_the_affiliate_link_and_its_disclosure_are_exposed(self):
+        status = metricool.status()
+        self.assertEqual(status["signup_url"], "https://my.mtr.cool/NEMGNE")
+        self.assertIn("affiliate", status["affiliate_note"].lower())
+        self.assertIn("not affiliated", metricool.NOT_AFFILIATED.lower())
+        self.assertIn("Metricool", metricool.NOT_AFFILIATED)
+
     def test_disconnect_clears_the_tokens(self):
         settings = config.load_settings()
         settings["metricool"] = {"access_token": "a", "refresh_token": "r", "expires_at": 1}
@@ -521,6 +528,14 @@ class SocialHttpTests(unittest.TestCase):
     def test_metricool_state_needs_no_network(self):
         data = json.loads(self.get("/api/social/state")[1].decode())
         self.assertEqual(data["metricool"]["mcp_url"], metricool.MCP_URL)
+
+    def test_the_state_carries_the_legal_notice(self):
+        data = json.loads(self.get("/api/state")[1].decode())
+        legal = data["legal"]
+        self.assertEqual(legal["signup_url"], metricool.SIGNUP_URL)
+        self.assertIn("affiliate", legal["affiliate_note"].lower())
+        self.assertIn("not affiliated", legal["not_affiliated"].lower())
+        self.assertEqual(legal["licence"], "MIT")
 
 
 if __name__ == "__main__":

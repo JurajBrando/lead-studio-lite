@@ -221,6 +221,20 @@ Step-by-step instructions for GitHub, your own site, Gumroad and other download 
 Issues and pull requests are welcome. Keep the app dependency-free: if a feature needs a package,
 put it behind an optional import with a graceful fallback. Run the test suite before opening a PR.
 
+## Legal notice
+
+Lead Studio Lite is an independent project. It is **not affiliated with, endorsed by or sponsored
+by Metricool** or any other service it connects to.
+
+The Metricool links in this app — the *Get Metricool* button and every *Connect* / *Open* link in
+the Social tab — are **affiliate links** (`https://my.mtr.cool/NEMGNE`). If you open a Metricool
+account through one, this project may earn a commission at no extra cost to you. Metricool's own
+terms and privacy policy apply to your account.
+
+The app is provided as is, under the MIT licence, without warranty. You are responsible for the
+messages you send and for the data you import — cold email is regulated (GDPR, CAN-SPAM, PECR and
+local equivalents). See [docs/PRIVACY.md](docs/PRIVACY.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Use it, rebrand it, give it away.

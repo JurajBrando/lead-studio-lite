@@ -1549,6 +1549,20 @@
     html += '<div class="card mt"><div class="card-head"><h2>Diagnostics</h2><div class="spacer"></div>' +
       '<button class="btn sm" data-act="diag">Run check</button></div><div id="diag-box" class="small dim">' +
       'Version ' + h(d.version) + ' · ' + h(d.python) + '</div></div>';
+
+    var legal = d.legal || {};
+    html += '<div class="card mt"><div class="card-head"><h2>Legal notice</h2></div>' +
+      '<div class="small muted">' + h(legal.not_affiliated ||
+        'This is an independent project, not affiliated with Metricool.') + '</div>' +
+      '<div class="small muted mt">' + h(legal.affiliate_note ||
+        'The Metricool links in this app are affiliate links.') + '</div>' +
+      '<div class="small dim mt">Metricool&rsquo;s own terms and privacy policy apply to your ' +
+      'account. This app is provided as is, under the ' + h(legal.licence || 'MIT') + ' licence, ' +
+      'without warranty. You are responsible for the messages you send and for the data you ' +
+      'import (GDPR, CAN-SPAM, PECR and local equivalents).</div>' +
+      '<div class="toolbar mt"><a class="btn sm" href="' +
+      h(legal.signup_url || 'https://my.mtr.cool/NEMGNE') +
+      '" target="_blank" rel="noopener sponsored">Metricool (affiliate link)</a></div></div>';
     return html;
   }
 
@@ -1613,6 +1627,25 @@
       if (SV_SECTION_SLOT[name]) SOCIAL[SV_SECTION_SLOT[name]] = null;
       toast('Asking Metricool...');
       svLoadSection(name, true);
+    },
+    'sv-legal': function () {
+      var legal = svLegal();
+      openModal({
+        title: 'Legal notice',
+        body: '<div class="small muted">' + h(legal.not_affiliated ||
+          'This is an independent project, not affiliated with Metricool.') + '</div>' +
+          '<div class="small muted mt">' + h(legal.affiliate_note ||
+            'The Metricool links in this app are affiliate links.') + '</div>' +
+          '<div class="small dim mt">Metricool&rsquo;s own terms and privacy policy apply to your ' +
+          'account. This app is provided as is, under the MIT licence, without warranty. You are ' +
+          'responsible for the messages you send and for the data you import (GDPR, CAN-SPAM, ' +
+          'PECR and local equivalents).</div>' +
+          '<div class="toolbar mt"><a class="btn sm" href="' +
+          h(legal.signup_url || 'https://my.mtr.cool/NEMGNE') +
+          '" target="_blank" rel="noopener sponsored">Metricool (affiliate link)</a>' +
+          '<a class="btn sm ghost" href="#settings" data-close>Settings</a></div>',
+        footer: '<button class="btn" data-close>Close</button>'
+      });
     },
     'sv-reply': function () {
       var text = svVal('sv-reply');
@@ -2595,6 +2628,17 @@
     return '<span class="sv-net">' + h(key || 'network') + '</span>';
   }
 
+  // Every link that leaves for Metricool goes through the affiliate link, and every one of
+  // them is marked rel="sponsored". The disclosure sits right under the connection bar.
+  function svMetricoolUrl() {
+    var m = (state.social && state.social.metricool) || {};
+    return m.signup_url || m.app_url || 'https://app.metricool.com';
+  }
+
+  function svLegal() {
+    return (state.data && state.data.legal) || {};
+  }
+
   // ------------------------------------------------------------------ sample data
   // Only shown when the operator asks for it, always labelled. It exists so the layout
   // can be read without a connected account, not to look like real numbers.
@@ -2758,10 +2802,15 @@
       (connected
         ? '<button class="btn sm" data-act="mc-tools">Load tools</button>' +
           '<button class="btn sm danger" data-act="mc-off">Disconnect</button>'
-        : '<button class="btn sm primary" data-act="mc-on">Connect Metricool</button>') +
+        : '<a class="btn sm primary" href="' + h(svMetricoolUrl()) +
+          '" target="_blank" rel="noopener sponsored">Get Metricool</a>' +
+          '<button class="btn sm" data-act="mc-on">I have an account - connect</button>') +
       '<button class="btn sm ghost" data-act="sv-demo">' +
       (SOCIAL.demo ? 'Hide sample data' : 'Show sample data') + '</button>' +
-      '</div></div>';
+      '</div></div>' +
+      '<div class="sv-disclosure">Metricool links here are affiliate links: if you open an account ' +
+      'through one, this project may earn a commission at no extra cost to you. It is not ' +
+      'affiliated with Metricool. <button class="linkish" data-act="sv-legal">Legal notice</button></div>';
   }
 
   function svTabBar() {
@@ -3149,8 +3198,8 @@
         var live = (sample && /instagram|tiktok/.test(name)) || false;
         return '<div class="sv-network"><span class="sv-dot"></span><span class="grow">' + h(name) + '</span>' +
           (live ? '<span class="badge green">connected</span>'
-            : '<a class="btn sm" href="' + h(state.social.metricool.app_url || 'https://app.metricool.com') +
-              '" target="_blank" rel="noopener">Connect</a>') + '</div>';
+            : '<a class="btn sm" href="' + h(svMetricoolUrl()) +
+              '" target="_blank" rel="noopener sponsored">Connect</a>') + '</div>';
       }).join('') + '</div></div>';
     html += '</div>';
     return html;
@@ -3196,8 +3245,8 @@
           (on ? 'connected' : 'not connected') + '</span></div>' +
           '<div class="small dim">' + h(row[2]) + '</div>' +
           '<div class="toolbar" style="margin:12px 0 0">' +
-          '<a class="btn sm" href="' + h((state.social.metricool.app_url || 'https://app.metricool.com')) +
-          '" target="_blank" rel="noopener">' + (on ? 'Open' : 'Connect') + '</a>' +
+          '<a class="btn sm" href="' + h(svMetricoolUrl()) +
+          '" target="_blank" rel="noopener sponsored">' + (on ? 'Open' : 'Connect') + '</a>' +
           (state.social.metricool.connected && !SOCIAL.demo
             ? '<button class="btn sm" data-act="sv-section" data-section="ads">Load</button>' : '') +
           '</div></div>';
@@ -3210,8 +3259,8 @@
     if (!campaigns.length) {
       html += svEmpty('No ad accounts connected',
         'Connect Meta, Google or TikTok in Metricool and their campaigns show up here.',
-        '<a class="btn primary" href="' + h(state.social.metricool.app_url || 'https://app.metricool.com') +
-        '" target="_blank" rel="noopener">Open Metricool</a>');
+        '<a class="btn primary" href="' + h(svMetricoolUrl()) +
+        '" target="_blank" rel="noopener sponsored">Open Metricool</a>');
     } else {
       html += '<div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Platform</th>' +
         '<th class="num">Spend</th><th class="num">Results</th><th class="num">Cost / result</th>' +

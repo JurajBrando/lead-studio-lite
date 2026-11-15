@@ -122,6 +122,12 @@ The REST API is only included in **Advanced** and **Custom** plans. The **MCP se
 the account's own limits still apply (1 brand, 20 posts a month, 30 days of analytics, no LinkedIn
 or X).
 
+The links that leave this app for Metricool - *Get Metricool* in the connection bar and every
+*Connect* / *Open* in Planner, Ads and Reporting - go through the project's **affiliate link**
+(`https://my.mtr.cool/NEMGNE`). Creating an account through one may earn this project a commission
+at no extra cost to you. The app itself is not affiliated with Metricool, and says so in the legal
+notice under the connection bar and in **Settings -> Legal notice**.
+
 1. *Connect Metricool* registers the app on the fly (OAuth dynamic client registration, public
    client, PKCE S256) and opens the browser.
 2. You approve; Metricool redirects to `http://127.0.0.1:<port>/oauth/metricool/callback`.

@@ -1,3 +1,26 @@
+## [1.10.2] - 2026-11-15
+
+Metricool through the project's affiliate link, and the legal notice that goes with it.
+
+### Changed
+
+- **Every link that leaves for Metricool goes through the affiliate link**
+  (`https://my.mtr.cool/NEMGNE`): *Get Metricool* in the connection bar, every *Connect* under
+  Planner -> Connect social networks, the Meta/Google/TikTok *Open* and *Connect* buttons, and the
+  ads empty state. All of them are `rel="noopener sponsored"`.
+- **The connection bar reads differently**: *Get Metricool* (the affiliate link, for someone who
+  needs an account) and *I have an account - connect* (the OAuth flow), instead of one button that
+  could mean either.
+- **A legal notice** under the connection bar, a *Legal notice* card at the bottom of Settings, a
+  line in the sidebar, and the same text in the README: not affiliated with Metricool, the links
+  are affiliate links, Metricool's terms and privacy policy apply, MIT licence and no warranty,
+  and you are responsible for what you send and import.
+
+### Tests
+
+280 (was 278): the affiliate URL and the disclosure in the Metricool status, and the legal block
+in `/api/state`.
+
 ## [1.10.1] - 2026-11-15
 
 A **Browse** button on the import dialog's "File on this computer" tab.
