@@ -36,7 +36,8 @@ built-in data enrichment.
   domain list (`domains.txt`) are too big for a repository, so they are published as the public
   dataset [JurajBrando/lead-studio-data](https://huggingface.co/datasets/JurajBrando/lead-studio-data)
   and linked from *Leads → Bulk data*. The weekly Common Crawl job reads the CC host index from the
-  same Hub to add domains you do not have yet.
+  same Hub to add domains you do not have yet. Re-publish them with
+  `python tools/upload_bulk_data.py` (needs a write token).
 - **Verify before you send** — syntax, typo domains, disposable providers, role accounts (`info@`),
   MX records (`dnspython` → `nslookup` fallback), optional live SMTP probe.
 - **Sequences** — unlimited steps, per-step delays, merge fields with fallbacks
