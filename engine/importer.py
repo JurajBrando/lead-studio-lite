@@ -9,6 +9,7 @@ import csv
 import io
 import os
 import re
+import sqlite3
 
 from . import db, mail, net
 
@@ -669,11 +670,24 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
     seen = None if big else set()
     summary["duplicate_check_skipped"] = bool(big)
     pending = []
+    pending_emails = set()
 
     def flush():
-        if pending:
+        if not pending:
+            return
+        try:
             db.insert_many("leads", pending)
-            del pending[:]
+        except sqlite3.IntegrityError:
+            # A repeated address that slipped into the same batch: store what fits and count the
+            # rest, instead of killing an import that has been running for hours.
+            for record in pending:
+                try:
+                    db.insert("leads", record)
+                except sqlite3.IntegrityError:
+                    summary["duplicates"] += 1
+                    summary["imported"] -= 1
+        del pending[:]
+        pending_emails.clear()
 
     for row in rows:
         if limit and summary["examined"] >= limit:
@@ -738,6 +752,9 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
             summary["existing_email"] += 1
             continue
 
+        if email and email in pending_emails:
+            summary["duplicates"] += 1        # same address twice inside one batch
+            continue
         record = dict(base)
         record.update(data)
         record.update({
@@ -750,6 +767,8 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
         if email and email in suppressed:
             record["status"] = "unsubscribed"
         pending.append(record)
+        if email:
+            pending_emails.add(email)
         summary["imported"] += 1
         if not email:
             summary["no_email"] += 1

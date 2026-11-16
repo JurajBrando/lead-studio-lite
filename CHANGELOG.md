@@ -1,3 +1,14 @@
+## [1.34.1] - 2026-11-16
+
+### Fixed
+
+- **`UNIQUE constraint failed: leads.email` on a big import.** Above two million rows the in-file
+  duplicate set is skipped (memory), and a repeated address *inside the same 500-row batch* is not
+  in the database yet when the row is checked - so both copies were queued and the batch insert
+  died. Now a batch keeps the addresses it already holds (`pending_emails`), counts the repeat as a
+  duplicate, and if a batch still collides it falls back to inserting row by row, counting the
+  losers instead of aborting an import that may have been running for hours.
+
 ## [1.34.0] - 2026-11-16
 
 A 62 million row file imports without a cap and without eating the machine's memory.

@@ -55,5 +55,27 @@ class LargeImportTests(unittest.TestCase):
         self.assertEqual(second["existing_email"], 3)
 
 
+    def test_the_same_address_twice_in_one_batch_does_not_crash_the_import(self):
+        rows = [{"email": "twice@large-import.example", "company": "A"},
+                {"email": "twice@large-import.example", "company": "B"},
+                {"email": "other@large-import.example", "company": "C"}]
+        answer = importer.import_rows("big.csv", ["email", "company"], rows,
+                                      limit=80000000, total=62759990)
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(answer["imported"], 2)
+        self.assertEqual(answer["duplicates"], 1)
+        stored = db.scalar("SELECT COUNT(*) FROM leads WHERE email='twice@large-import.example'")
+        self.assertEqual(stored, 1)
+
+    def test_a_duplicate_batch_is_stored_row_by_row_instead_of_aborting(self):
+        rows = [{"email": "batch@large-import.example", "company": rep * 3}
+                for rep in ("x", "y")]
+        rows.append(dict(rows[0]))                 # same address, same batch
+        answer = importer.import_rows("big.csv", ["email", "company"], rows,
+                                      limit=80000000, total=62759990)
+        self.assertTrue(answer["ok"], answer)
+        self.assertGreaterEqual(answer["duplicates"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
