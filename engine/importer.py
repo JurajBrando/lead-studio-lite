@@ -624,9 +624,7 @@ def import_state(path, table="", where=""):
 def _save_state(key, full, table, where, offset_rows, summary, finished=False):
     try:
         _ensure_state_table()
-        existing = db.one("SELECT key FROM import_state WHERE key=?", (key,))
-        payload = {"key": key, "path": full, "table_name": table or "", "where_sql": where or "",
-                   "offset_rows": int(offset_rows), "examined": int(summary.get("examined") or 0),
+        payload = {"offset_rows": int(offset_rows), "examined": int(summary.get("examined") or 0),
                    "imported": int(summary.get("imported") or 0),
                    "updated": int(summary.get("updated") or 0),
                    "finished": 1 if finished else 0,
@@ -634,10 +632,17 @@ def _save_state(key, full, table, where, offset_rows, summary, finished=False):
                                           ("imported", "updated", "duplicates", "invalid",
                                            "existing_email", "no_email", "examined")}),
                    "updated_ts": db.now()}
+        existing = db.one("SELECT key FROM import_state WHERE key=?", (key,))
         if existing:
-            db.update("import_state", existing["key"], payload)
+            # db.update() writes "WHERE id=?", and this table's primary key is a text `key`.
+            db.execute("UPDATE import_state SET offset_rows=?, examined=?, imported=?, updated=?, "
+                       "finished=?, summary=?, updated_ts=? WHERE key=?",
+                       (payload["offset_rows"], payload["examined"], payload["imported"],
+                        payload["updated"], payload["finished"], payload["summary"],
+                        payload["updated_ts"], key))
         else:
-            db.insert("import_state", payload)
+            db.insert("import_state", dict(payload, key=key, path=full,
+                                           table_name=table or "", where_sql=where or ""))
     except Exception:                             # noqa: BLE001 - never lose the run over state
         pass
 

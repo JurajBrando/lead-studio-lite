@@ -1,3 +1,36 @@
+## [1.36.3] - 2026-11-16
+
+### Fixed
+
+- **"Import from this file" did nothing.** `run()` read `$('#imp-restart').checked`, but the
+  restart checkbox had never made it into the markup, so clicking the button threw
+  `Cannot read properties of null` before any request was sent. The checkbox is in the path tab
+  now, and every control is read defensively - a missing element can no longer kill the click.
+- **No progress bar on the path tab.** The bar lived inside the upload drop zone, which is hidden
+  while the path tab is open. It now sits under the two tabs, visible in both, and a click first
+  shows `Starting the import of <file>...` in the result box.
+- **The checkpoint never advanced.** `_save_state` used `db.update("import_state", key, ...)`,
+  which writes `WHERE id=?` - and this table's primary key is a text `key`. The update failed
+  silently inside the try/except, so a resumed run kept the old offset. It now updates by `key`
+  explicitly.
+
+### Verified on the real 8 GB file (25 203 723 rows)
+
+```
+run 1, killed after ~6 s    state: offset_rows 20 000, finished 0
+run 2                       phase: "resuming at row 20000"
+run 2, killed after ~6 s    state: offset_rows 35 000  (15 000 rows this run)
+```
+
+### Notes
+
+- Checkpoints are every 5 000 rows; an interruption loses at most that much repeated work.
+- The dialog's Filter is a SQL `WHERE` for DuckDB/SQLite only. `rec_results.duckdb` has no
+  `best_email` column (its columns are kind, url, domain, group, status, title, description, ...),
+  so leaving that filter in makes DuckDB refuse the query - clear it, or use a column that exists.
+- Measured on that file: about 2 500-3 300 rows a second through the app, so 25.2M rows is roughly
+  2.5-4 hours.
+
 ## [1.36.2] - 2026-11-16
 
 ### Fixed

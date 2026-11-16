@@ -63,6 +63,17 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(second["imported"], 0)         # and the addresses already exist
         self.assertEqual(second["existing_email"], 10)
 
+    def test_a_checkpoint_moves_the_saved_offset_forward(self):
+        full = os.path.abspath(self.duck)
+        key = importer._state_key(full, "contacts", "")
+        importer._save_state(key, full, "contacts", "", 5, {"examined": 5, "imported": 5},
+                             finished=False)
+        importer._save_state(key, full, "contacts", "", 12, {"examined": 7, "imported": 6},
+                             finished=False)
+        state = importer.import_state(full, "contacts", "")
+        self.assertEqual(state["offset_rows"], 12)
+        self.assertEqual(state["examined"], 7)
+
     def test_restart_ignores_the_saved_offset(self):
         full = os.path.abspath(self.duck)
         key = importer._state_key(full, "contacts", "")

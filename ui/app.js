@@ -3682,10 +3682,12 @@
         '<button class="sv-tab on" data-imp-mode="upload">Upload a file</button>' +
         '<button class="sv-tab" data-imp-mode="path">File on this computer</button>' +
         '</div>' +
+        '<div class="progress hidden" id="imp-progress" style="margin-bottom:12px">' +
+        '<div class="fill" id="imp-fill"></div></div>' +
         '<div id="imp-upload">' +
         '<div class="drop" id="drop"><div class="big">Drop a file here</div>' +
         '<div class="small">or click to choose - CSV, TSV, JSON, Excel, Parquet, DuckDB, SQLite</div>' +
-        '<div class="progress hidden" id="imp-progress"><div class="fill" id="imp-fill"></div></div></div>' +
+        '</div>' +
       '<div id="imp-upload-result" class="mt"></div>' +
         '</div>' +
         '<div id="imp-path" class="hidden">' +
@@ -3704,6 +3706,8 @@
         'placeholder="best_email IS NOT NULL"></div>' +
         '<label class="check"><input type="checkbox" id="imp-only-email"> ' +
         'Only rows that have an email</label>' +
+      '<label class="check"><input type="checkbox" id="imp-restart"> ' +
+      'Start this file from the beginning</label>' +
         '<div class="toolbar" style="margin-top:12px">' +
         '<button class="btn primary" id="imp-run">Import from this file</button></div>' +
         '</div>' +
@@ -3842,18 +3846,24 @@
         if (dropFile) setTimeout(function () { handleFile(dropFile); }, 60);
 
         function run() {
-          var path = $('#imp-path-input', root).value.trim();
+          var pathEl = $('#imp-path-input', root);
+          var path = pathEl ? pathEl.value.trim() : '';
           if (!path) return toast('Paste the path to a file first', 'err');
+          function valueOf(id) { var el = $('#' + id, root); return el ? el.value : ''; }
+          function checkedOf(id) { var el = $('#' + id, root); return !!(el && el.checked); }
           var body = {
             path: path,
             limit: 0,
-            where: $('#imp-where', root).value,
-            restart: $('#imp-restart', root).checked,
-            update_existing: $('#imp-update', root).checked,
-            only_email: $('#imp-only-email', root).checked
+            where: valueOf('imp-where'),
+            restart: checkedOf('imp-restart'),
+            update_existing: checkedOf('imp-update'),
+            only_email: checkedOf('imp-only-email')
           };
           var select = $('#imp-table', root);
           if (select) body.table = select.value;
+          var box = $('#imp-result', root);
+          if (box) box.innerHTML = '<div class="small dim">Starting the import of ' +
+            h(path.split(/[\\/]/).pop()) + '...</div>';
           startImport(body, root);
         }
 
