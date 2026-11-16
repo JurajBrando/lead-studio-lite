@@ -3686,6 +3686,7 @@
         '<div class="drop" id="drop"><div class="big">Drop a file here</div>' +
         '<div class="small">or click to choose - CSV, TSV, JSON, Excel, Parquet, DuckDB, SQLite</div>' +
         '<div class="progress hidden" id="imp-progress"><div class="fill" id="imp-fill"></div></div></div>' +
+      '<div id="imp-upload-result" class="mt"></div>' +
         '</div>' +
         '<div id="imp-path" class="hidden">' +
         '<div class="field"><label>Path on this computer</label>' +

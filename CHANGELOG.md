@@ -1,3 +1,15 @@
+## [1.36.2] - 2026-11-16
+
+### Fixed
+
+- **The upload result box was not actually in the page.** 1.36.1 pointed the upload at
+  `#imp-upload-result` and claimed the box was there, but the markup insertion had not matched, so
+  the box did not exist: choosing a file still produced no visible progress and no summary. The
+  box is now inside the *Upload a file* tab (verified in the built dialog markup: div, the
+  `handleFile` lookup and the `startImport`/`watchImport` target all resolve). Uploading a file now
+  shows `Reading <name> (KB)`, the bar, the live phase and the final imported/existing/invalid
+  counts.
+
 ## [1.36.1] - 2026-11-16
 
 ### Fixed
