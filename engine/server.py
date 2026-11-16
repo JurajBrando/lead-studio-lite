@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, pipeline, progress, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osm, pipeline, progress, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -545,6 +545,47 @@ def _import_run(label, work):
 
 def r_import_progress(q):
     return progress.snapshot(q.get("id") or "")
+
+
+def r_osm_search(p):
+    """Offer + place -> OpenStreetMap businesses, split by how they can be reached."""
+    try:
+        return osm.search(p.get("text") or p.get("offer") or "",
+                          area=str(p.get("area") or ""),
+                          limit=int(p.get("limit") or 200),
+                          refresh=bool(p.get("refresh")))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:                      # noqa: BLE001 - the API is the outside world
+        config.log("osm search failed: %s\n%s" % (exc, traceback.format_exc()))
+        return {"ok": False, "error": "OpenStreetMap did not answer: %s" % exc}
+
+
+def r_osm_import(p):
+    """The OSM rows with an email (and the website-only ones) become leads."""
+    try:
+        return osm.import_ready(category=str(p.get("category") or ""),
+                                area=str(p.get("area") or ""),
+                                limit=int(p.get("limit") or 2000),
+                                include_website=bool(p.get("include_website", True)))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_osm_status(p):
+    return osm.lists(category=str(p.get("category") or ""), area=str(p.get("area") or ""))
+
+
+def r_hot_today(p):
+    """Today's hot list from the app's own signals, leads and offers."""
+    try:
+        answer = hotlist.build(days=int(p.get("days") or 2),
+                               limit=int(p.get("limit") or 500))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if p.get("table"):
+        answer["rows"] = answer["rows"][:300]
+    return answer
 
 
 def r_lead_import(p):
@@ -1645,6 +1686,10 @@ ROUTES_POST = {
     "/api/social/metricool/call": r_metricool_call,
     "/api/social/metricool/schedule": r_metricool_schedule,
     "/api/social/metricool/analytics": r_metricool_analytics,
+    "/api/osm/search": r_osm_search,
+    "/api/osm/import": r_osm_import,
+    "/api/osm/status": r_osm_status,
+    "/api/hot/today": r_hot_today,
 }
 
 

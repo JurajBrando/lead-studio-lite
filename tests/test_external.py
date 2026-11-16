@@ -129,23 +129,15 @@ class MissingFolderTests(unittest.TestCase):
         self.assertFalse(answer["ok"])
         self.assertIn("not there", answer["error"])
 
-    def test_osm_without_its_folder(self):
-        external.DEFAULTS["clean"] = os.path.join(tempfile.gettempdir(), "no-clean-here")
-        try:
-            answer = self.run_job(osm_business.run, {"offer": "QUOTEIQ"})
-        finally:
-            external.DEFAULTS["clean"] = r"C:\Users\admin\Desktop\Modulario\_CLEAN_2026-11-02"
+    def test_osm_refuses_an_empty_search(self):
+        answer = self.run_job(osm_business.run, {"text": "   "})
         self.assertFalse(answer["ok"])
-        self.assertIn("not there", answer["error"])
+        self.assertIn("Type what to look for", answer["error"])
 
-    def test_hot_list_without_its_folder(self):
-        external.DEFAULTS["clean"] = os.path.join(tempfile.gettempdir(), "no-clean-here")
-        try:
-            answer = self.run_job(hot_list.run)
-        finally:
-            external.DEFAULTS["clean"] = r"C:\Users\admin\Desktop\Modulario\_CLEAN_2026-11-02"
-        self.assertFalse(answer["ok"])
-        self.assertIn("not there", answer["error"])
+    def test_hot_list_is_native_and_needs_no_folder(self):
+        answer = self.run_job(hot_list.run, {"days": 2, "limit": 20})
+        self.assertTrue(answer["ok"], answer)
+        self.assertIn("rows", answer)
 
 
 if __name__ == "__main__":

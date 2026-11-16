@@ -1,3 +1,43 @@
+## [1.31.0] - 2026-11-16
+
+OpenStreetMap and the hot list are native now - no scripts outside the app.
+
+### Added
+
+- **`engine/osm.py`**: a free-text offer becomes OSM tags (a map of the usual trades, and an
+  unknown term falls through to a `name~/craft~/shop~` search, so *any* business type works), the
+  place is geocoded with Nominatim, and the Overpass API answers with the businesses. Rows go into
+  the new `osm_business` table, so a repeated search costs nothing; the three lists are queries
+  over it: with an email, website only, phone only. `import_ready()` turns the ones with a contact
+  into leads (`source='osm'`), reusing the normal importer. Four Overpass mirrors, a second pass
+  after a pause, and a clear "free service is busy, try again" message.
+- **Domains page**: a *Find local businesses (OpenStreetMap)* card - what to look for, where (or
+  `roofers in Slovakia`, `dentists, Bratislava`), how many, then **Find** (counts of the three
+  lists) and **Import the ones with a contact**. ODbL credit is on the card.
+- **`engine/hotlist.py`**: today's hot list built from the app's own signals, leads and offers -
+  heat, offer, signal, reason, the first email question, address, name, title, email confidence,
+  company, domain, evidence. Writes `data/hot/hot_<date>.csv` with the same columns as the list
+  the user already reads. Signal kinds with no buying intent (`mx_missing`) are left out.
+- **Daily page**: a *TODAY HOT LIST* card with a **Build today's hot list** button and the table.
+- Routes `/api/osm/search`, `/api/osm/import`, `/api/osm/status`, `/api/hot/today`.
+- The OSM job now runs the native search (`text`, `area`, `limit`, `import`); the hot-list job runs
+  the native builder. The whole-pipeline job still calls `daily_pipeline.py`, which is an
+  orchestrator of its own scripts.
+
+### Measured
+
+- "roofers in Slovakia": **21 businesses, 10 with an email, 6 website only, 1 phone only**;
+  import turned **16 with a contact into 16 leads**.
+- The hot list on the current data: 1,060 signals in two days, natives templates and offer
+  matching working; the rows are WARM because the Signals jobs (brand watch, ads) had not filled
+  the dropped-tool kinds yet.
+
+### Tests
+
+474 (was 463): offer parsing (trade map, comma form, unknown term, empty), domain extraction,
+storage upsert (no duplicates), the three lists, import into leads, the hot list's heat/offer/
+question/confidence, noise kinds excluded, and the CSV header.
+
 ## [1.30.0] - 2026-11-16
 
 Three jobs that call the older tooling, instead of re-inventing it.

@@ -656,6 +656,15 @@
     return value.slice(0, 4) + '-' + value.slice(4, 6) + '-' + value.slice(6, 8);
   }
 
+  function osmSummary(r) {
+    if (!r || !r.ok) return '';
+    return '<div class="small"><b>' + num(r.total) + '</b> businesses · <b>' +
+      num(r.with_email) + '</b> with an email · <b>' + num(r.website_only) +
+      '</b> website only · <b>' + num(r.phone_only) + '</b> phone only' +
+      (r.cached ? ' <span class="badge grey">cached</span>' : '') + '</div>' +
+      '<div class="small dim">' + h(r.place || '') + ' · ' + h((r.tags || []).join(', ')) + '</div>';
+  }
+
   function viewDomains(d) {
     var q = state.domains;
     var s = q.stats || {};
@@ -687,6 +696,25 @@
           '<a class="btn sm ghost" href="' + h(src.url) + '" target="_blank" rel="noopener">Open</a>' +
           '</div></div>';
       }).join('') + '</div></div>';
+
+    html += '<div class="card mt" id="osm-card"><div class="card-head"><h2>Find local businesses ' +
+      '(OpenStreetMap)</h2><div class="spacer"></div>' +
+      '<span class="small dim">free · no key · ODbL</span></div>' +
+      '<div class="grid cols-3">' +
+      '<div class="field"><label>What to look for</label>' +
+      '<input id="osm-text" placeholder="roofers in Slovakia · dentists, Bratislava · yoga studio"></div>' +
+      '<div class="field"><label>Where (optional)</label>' +
+      '<input id="osm-area" placeholder="country, region or city"></div>' +
+      '<div class="field"><label>How many</label>' +
+      '<input type="number" id="osm-limit" value="200" min="5" max="1000"></div>' +
+      '</div>' +
+      '<div class="toolbar" style="margin-top:10px">' +
+      '<button class="btn primary" data-act="osm-search">Find businesses</button>' +
+      '<button class="btn" data-act="osm-import">Import the ones with a contact</button></div>' +
+      '<div id="osm-result" class="small dim mt">Any trade or business type works - an unknown term ' +
+      'is matched against the name/craft/shop tags, and the answer is cached.</div>' +
+      '<div class="small dim mt">Data &copy; OpenStreetMap contributors, ODbL. Emailing people ' +
+      'found this way is your GDPR call.</div></div>';
 
     html += '<div class="card tight mt" style="padding:0">' +
       '<div class="toolbar" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--line)">' +
@@ -1149,6 +1177,11 @@
       '<button class="btn" data-act="run-due">Run due jobs</button>');
     html += '<div class="card tight" id="daily-target" style="margin-bottom:12px">' +
       '<div class="small dim">Loading...</div></div>';
+    html += '<div class="card mt" id="hot-card"><div class="card-head"><h2>TODAY HOT LIST</h2>' +
+      '<div class="spacer"></div><span class="small dim">heat · offer · first email question</span></div>' +
+      '<div class="toolbar"><button class="btn primary" data-act="hot-build">Build today\'s hot list</button>' +
+      '<span class="small dim" id="hot-note">Turns the findings below into the list worth a first email.</span></div>' +
+      '<div id="hot-result" class="small dim mt"></div></div>';
     html += '<div class="card tight" id="signal-filter" style="margin-bottom:12px">' +
       '<div class="small dim">Loading...</div></div>';
     html += '<div class="card" id="signals-box" style="padding:0">' +
@@ -2917,6 +2950,77 @@
       loadLeads();
     },
     'domain-refresh': function () { loadDomains(); },
+    'hot-build': function (el) {
+      var box = $('#hot-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Building...';
+      call('/api/hot/today', { limit: 300, table: true }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) {
+          if (box) box.innerHTML = '<div style="color:var(--red)">' + h(r.error) + '</div>';
+          return;
+        }
+        var c = r.counts || {};
+        var rows = r.rows || [];
+        if (!rows.length) {
+          if (box) box.innerHTML = 'No signals in the last two days yet - run the Daily jobs first.';
+          return;
+        }
+        if (box) {
+          box.innerHTML = '<div class="small"><b>' + num(c.total) + '</b> rows · <b>' + num(c.HOT) +
+            '</b> hot · <b>' + num(c.WARM) + '</b> warm · <b>' + num(c.with_email) +
+            '</b> with an email</div><div class="table-wrap mt"><table><thead><tr>' +
+            '<th>Heat</th><th>Offer</th><th>Signal</th><th>Reason</th><th>First email question</th>' +
+            '<th>Email</th><th>Company</th><th>Confidence</th></tr></thead><tbody>' +
+            rows.map(function (row) {
+              return '<tr><td><span class="badge ' + (row.heat === 'HOT' ? 'red' : 'amber') + '">' +
+                h(row.heat) + '</span></td><td>' + h(row.offer || '—') + '</td><td class="small">' +
+                h(row.signal) + '</td><td class="small">' + h(row.reason) + '</td>' +
+                '<td class="small" style="max-width:360px">' + h(row['first email question']) + '</td>' +
+                '<td class="small">' + h(row.email || '—') + '</td><td>' + h(row.company || '') +
+                '</td><td class="small dim">' + h(row['email confidence']) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' +
+            '<div class="small dim mt">CSV: <span class="mono">' + h(r.path || '') + '</span></div>';
+        }
+        if (r.path) toast('Hot list written to ' + r.path.split('\\').pop());
+      });
+    },
+    'osm-search': function (el) {
+      var text = ($('#osm-text') || {}).value || '';
+      var area = ($('#osm-area') || {}).value || '';
+      var limit = Number(($('#osm-limit') || {}).value) || 200;
+      var box = $('#osm-result');
+      if (!text.trim()) return toast('Type what to look for, e.g. roofers in Slovakia', 'err');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = '<div class="small dim">Searching OpenStreetMap - a whole country ' +
+        'can take half a minute...</div>';
+      call('/api/osm/search', { text: text, area: area, limit: limit }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) {
+          if (box) box.innerHTML = '<div class="small" style="color:var(--red)">' + h(r.error) + '</div>';
+          return;
+        }
+        state.osm = r;
+        if (box) box.innerHTML = osmSummary(r);
+      });
+    },
+    'osm-import': function (el) {
+      var found = state.osm || {};
+      var box = $('#osm-result');
+      if (el) el.disabled = true;
+      call('/api/osm/import', {
+        category: found.category || '', area: found.area || '', limit: 5000
+      }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) return toast(r.error || 'Could not import the OpenStreetMap rows', 'err');
+        toast(num(r.imported) + ' contacts imported from OpenStreetMap');
+        if (box) box.innerHTML = osmSummary(state.osm || {}) +
+          '<div class="small mt">Imported <b>' + num(r.imported) + '</b> of ' + num(r.examined) +
+          ' rows with a contact.</div>';
+        loadDomains();
+        loadLeads();
+      });
+    },
     'domain-sync': function (el) {
       if (el) el.disabled = true;
       call('/api/domain/sync', {}).then(function (r) {
