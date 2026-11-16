@@ -7,6 +7,7 @@ file of descriptions alone cannot turn into thousands of identical blank leads.
 """
 import csv
 import io
+import json
 import os
 import re
 import sqlite3
@@ -189,23 +190,52 @@ def decode_bytes(raw):
 
 # ------------------------------------------------------------------ sources
 def path_kind(path):
+    """csv/tsv/txt, json, excel, parquet, duckdb or sqlite - by the file name."""
     lower = str(path or "").lower()
-    if lower.endswith(".parquet"):
+    if lower.endswith((".csv", ".tsv", ".txt", ".dat", ".tab")):
+        return "csv"
+    if lower.endswith(".json"):
+        return "json"
+    if lower.endswith((".xlsx", ".xlsm", ".xls")):
+        return "excel"
+    if lower.endswith((".parquet", ".pq")):
         return "parquet"
     if lower.endswith((".duckdb", ".ddb", ".duck")):
         return "duckdb"
     if lower.endswith((".db", ".sqlite", ".sqlite3")):
         return "sqlite"
-    if lower.endswith((".xlsx", ".xlsm")):
-        return "excel"
-    if lower.endswith((".csv", ".tsv", ".txt", ".psv")):
-        return "csv"
     return ""
+
+
+def _read_json(raw):
+    """A JSON file: a list of records, or an object holding one (rows/data/contacts/leads)."""
+    text = decode_bytes(raw) if isinstance(raw, bytes) else raw
+    data = json.loads(text)
+    if isinstance(data, dict):
+        for key in ("rows", "data", "contacts", "leads", "items", "records", "results"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+        else:
+            data = [data]
+    if not isinstance(data, list) or not data:
+        return [], []
+    headers = []
+    for record in data:
+        if isinstance(record, dict):
+            for key in record:
+                if str(key) not in headers:
+                    headers.append(str(key))
+    rows = [{key: _cell(record.get(key)) for key in headers}
+            for record in data if isinstance(record, dict)]
+    return headers, rows
 
 
 def read_rows(name, raw):
     """(headers, rows) from CSV-ish text, Excel, Parquet, DuckDB or SQLite bytes."""
     lname = (name or "").lower()
+    if lname.endswith(".json"):
+        return _read_json(raw)
     if lname.endswith(".parquet"):
         return _read_parquet(raw)
     if lname.endswith((".duckdb", ".ddb", ".duck")):
@@ -475,7 +505,7 @@ def _safe_where(where):
     return text
 
 
-def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
+def iter_source_rows(path, table="", where="", limit=0, report=None, size=0, skip=0):
     """(headers, generator of row dicts). Streams parquet and DuckDB, never loads it all."""
     full, kind = _check_path(path)
     where = _safe_where(where)
@@ -493,9 +523,11 @@ def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
             seen = 0
             for batch in handle.iter_batches(batch_size=2000):
                 for record in batch.to_pylist():
-                    yield {k: _cell(v) for k, v in record.items()}
                     seen += 1
-                    if limit and seen >= limit:
+                    if seen <= int(skip or 0):
+                        continue
+                    yield {k: _cell(v) for k, v in record.items()}
+                    if limit and seen - int(skip or 0) >= limit:
                         return
                 if report:
                     report(min(seen, total_rows or seen), total_rows, "reading the file", seen)
@@ -520,7 +552,9 @@ def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
         if where:
             sql += " WHERE " + where
         if limit:
-            sql += " LIMIT %d" % int(limit)
+            sql += " LIMIT %d OFFSET %d" % (int(limit), int(skip or 0))
+        elif skip:
+            sql += " LIMIT 9223372036854775807 OFFSET %d" % int(skip)
         cursor = con.execute(sql)
         headers = [d[0] for d in cursor.description]
 
@@ -553,6 +587,8 @@ def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
     if report:
         report(size, size, "parsing", 0)
     headers, rows = read_rows(os.path.basename(full), raw)
+    if skip:
+        rows = rows[int(skip):]
     if limit:
         rows = rows[:int(limit)]
     if report:
@@ -560,28 +596,96 @@ def iter_source_rows(path, table="", where="", limit=0, report=None, size=0):
     return headers, rows
 
 
-def import_path(path, table="", where="", limit=20000, source="", update_existing=False,
-                mark_status="new", only_email=False, report=None):
-    """Import rows from a file on this computer, streaming and capped."""
+def _state_key(full, table, where):
+    import hashlib
+    raw = "%s|%s|%s" % (os.path.abspath(full), table or "", where or "")
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _ensure_state_table():
+    db.execute("CREATE TABLE IF NOT EXISTS import_state (key TEXT PRIMARY KEY, path TEXT, "
+               "table_name TEXT DEFAULT '', where_sql TEXT DEFAULT '', offset_rows INTEGER DEFAULT 0, "
+               "examined INTEGER DEFAULT 0, imported INTEGER DEFAULT 0, updated INTEGER DEFAULT 0, "
+               "finished INTEGER DEFAULT 0, summary TEXT DEFAULT '', updated_ts INTEGER DEFAULT 0)")
+
+
+def import_state(path, table="", where=""):
+    """What was already read from this file, so the next run continues where it stopped."""
+    try:
+        full = os.path.abspath(os.path.expanduser(str(path or "").strip().strip('"')))
+        _ensure_state_table()
+        row = db.one("SELECT * FROM import_state WHERE key=?",
+                     (_state_key(full, table, where),))
+        return dict(row) if row else {}
+    except Exception:                             # noqa: BLE001 - a broken state is just none
+        return {}
+
+
+def _save_state(key, full, table, where, offset_rows, summary, finished=False):
+    try:
+        _ensure_state_table()
+        existing = db.one("SELECT key FROM import_state WHERE key=?", (key,))
+        payload = {"key": key, "path": full, "table_name": table or "", "where_sql": where or "",
+                   "offset_rows": int(offset_rows), "examined": int(summary.get("examined") or 0),
+                   "imported": int(summary.get("imported") or 0),
+                   "updated": int(summary.get("updated") or 0),
+                   "finished": 1 if finished else 0,
+                   "summary": json.dumps({k: summary.get(k) for k in
+                                          ("imported", "updated", "duplicates", "invalid",
+                                           "existing_email", "no_email", "examined")}),
+                   "updated_ts": db.now()}
+        if existing:
+            db.update("import_state", existing["key"], payload)
+        else:
+            db.insert("import_state", payload)
+    except Exception:                             # noqa: BLE001 - never lose the run over state
+        pass
+
+
+def import_path(path, table="", where="", limit=0, source="", update_existing=False,
+                mark_status="new", only_email=False, report=None, resume=True, restart=False):
+    """Import rows from a file on this computer, streaming and resumable.
+
+    `limit=0` means every row. Progress is saved every 5 000 rows, so a run that is interrupted
+    (or a machine that restarts) continues from the row it stopped at; `restart=True` starts over.
+    """
     try:
         full, kind = _check_path(path)
         size = os.path.getsize(full) if os.path.exists(full) else 0
+        key = _state_key(full, table, where)
+        skip, resumed_from = 0, 0
+        if resume and not restart:
+            state = import_state(full, table, where)
+            if state and not int(state.get("finished") or 0) and int(state.get("offset_rows") or 0):
+                skip = int(state["offset_rows"])
+                resumed_from = skip
         if report:
-            report(0, size, "reading the file")
+            report(0, size, "resuming at row %d" % skip if skip else "reading the file")
         headers, rows = iter_source_rows(full, table=table, where=where, limit=limit,
-                                         report=report, size=size)
+                                         report=report, size=size, skip=skip)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     total = len(rows) if hasattr(rows, "__len__") else 0
-    summary = import_rows(os.path.basename(full), headers, rows, source=source or "import",
-                          update_existing=update_existing, mark_status=mark_status,
-                          limit=limit, only_email=only_email, report=report, total=total)
+
+    def checkpoint(examined, current):
+        _save_state(key, full, table, where, skip + examined, current)
+
+    try:
+        summary = import_rows(os.path.basename(full), headers, rows, source=source or "import",
+                              update_existing=update_existing, mark_status=mark_status,
+                              limit=limit, only_email=only_email, report=report, total=total,
+                              checkpoint=checkpoint)
+    except Exception:
+        _save_state(key, full, table, where, skip + 0, {"examined": 0})
+        raise
+    _save_state(key, full, table, where, skip + int(summary.get("examined") or 0), summary,
+                finished=bool(summary.get("ok")))
     summary["path"] = full
     summary["kind"] = kind
+    summary["resumed_at"] = resumed_from
     if table:
         summary["table"] = table
     return summary
-
 
 # ------------------------------------------------------------------ the import itself
 def _full_name(data):
@@ -644,7 +748,7 @@ def _find_existing(email, data):
 
 def import_rows(name, headers, rows, source="import", update_existing=False,
                 mark_status="new", limit=0, only_email=False, mapping=None, report=None,
-                total=0):
+                total=0, checkpoint=None):
     """The import loop. `rows` is any iterable of dicts keyed by header name."""
     headers = list(headers or [])
     if not headers:
@@ -697,6 +801,8 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
         if report and summary["examined"] % 500 == 0:
             report(summary["examined"], total, "importing",
                    summary["imported"] + summary["updated"])
+        if checkpoint and summary["examined"] % 5000 == 0:
+            checkpoint(summary["examined"], summary)
 
         email = clean_email(row.get(headers[mapping["email"]])) if "email" in mapping else ""
         if email and not mail.valid_email(email):

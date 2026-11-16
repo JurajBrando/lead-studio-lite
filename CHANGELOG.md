@@ -1,3 +1,34 @@
+## [1.36.0] - 2026-11-16
+
+Every row, resume where it stopped, and the Contacts import the original app had.
+
+### Changed
+
+- **No more Max rows.** The field is gone from the import dialog and the path import default is
+  `limit=0`, which now means *every row in the file* (the route still accepts an explicit number,
+  capped at a billion, for anyone who wants a slice).
+- **A path import continues where it stopped.** Progress is checkpointed every 5 000 rows in a new
+  `import_state` table keyed by file + table + filter. If the run is interrupted - app closed,
+  machine restarted, an error - running the same import again starts at the saved row instead of
+  row one, and the progress line says `resuming at row N`. A new *Start this file from the
+  beginning* checkbox clears the checkpoint. A finished file is never resumed; its rows are
+  re-checked against the email index, so a rerun imports nothing twice.
+- **JSON import.** `.json` files are read now (a list of records, or `{rows: [...]}` /
+  `{data: [...]}` / `{contacts: [...]}`), alongside CSV, XLSX, Parquet, DuckDB and SQLite.
+
+### Added
+
+- **Contacts import panel on the Leads page** (the original Lead Studio's option): a card with
+  **Import contacts**, **Import from this computer**, and drag-and-drop **anywhere on the page** -
+  a dropped file opens the import dialog already pointed at it. The recognised file types are on
+  the card.
+
+### Tests
+
+511 (was 504): zero limit imports every row, an interrupted run resumes at its offset (and reads
+only the second half), a finished run starts over and imports nothing twice, a restart ignores the
+saved offset, and the JSON reader (list, wrapped object, path kind).
+
 ## [1.35.0] - 2026-11-16
 
 Treg is wired in - one token, 4,100+ tools, paid per call.

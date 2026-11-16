@@ -717,14 +717,15 @@ def r_lead_inspect(p):
 def r_lead_import_path(p):
     """Import from a file on this computer, streaming and capped (LEAD_INDEX files are GBs)."""
     try:
-        limit = int(p.get("limit") or 20000)
+        limit = int(p.get("limit") or 0)
     except (TypeError, ValueError):
         return {"ok": False, "error": "The row limit must be a number."}
-    limit = max(1, min(limit, 100000000))
+    limit = 0 if limit <= 0 else min(limit, 1000000000)      # 0 means every row in the file
     options = {"table": str(p.get("table") or ""), "where": str(p.get("where") or ""),
                "limit": limit, "update_existing": bool(p.get("update_existing")),
                "mark_status": p.get("status") or "new",
-               "only_email": bool(p.get("only_email"))}
+               "only_email": bool(p.get("only_email")),
+               "restart": bool(p.get("restart"))}
     name = os.path.basename(str(p.get("path") or "")) or "file"
     run_id = _import_run(name, lambda report: importer.import_path(
         p.get("path") or "", report=report, **options))

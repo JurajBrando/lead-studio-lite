@@ -283,6 +283,7 @@
     view.innerHTML = html;
     if (state.view === 'leads') wireLeads();
     if (state.view === 'domains') wireDomains();
+    if (state.view === 'leads') wireLeads();
     if (state.view === 'settings') wireSettings();
     if (state.view === 'mailboxes') wireMailboxes();
     if (state.view === 'inbox') wireInbox();
@@ -457,6 +458,18 @@
       '<button class="btn sm ghost" data-act="lead-clear">Clear filters</button></div>';
   }
 
+  function wireLeads() {
+    var view = $('#view');
+    if (!view || view.dataset.dropWired) return;
+    view.dataset.dropWired = '1';
+    view.ondragover = function (e) { e.preventDefault(); };
+    view.ondrop = function (e) {
+      if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      importModal(e.dataTransfer.files[0]);
+    };
+  }
+
   function viewLeads(d) {
     var q = state.leads;
     var f = q.filters || {};
@@ -470,6 +483,15 @@
       '<button class="btn" data-act="import">Import</button>' +
       '<button class="btn" data-act="bulk-data">Bulk data</button>' +
       '<button class="btn primary" data-act="add-lead">Add lead</button>');
+
+    html += '<div class="card" id="contacts-import" style="margin-bottom:12px">' +
+      '<div class="card-head"><h2>Import contacts</h2><div class="spacer"></div>' +
+      '<span class="small dim">CSV · XLSX · JSON · Parquet · DuckDB · SQLite</span></div>' +
+      '<div class="row" style="align-items:center;gap:12px">' +
+      '<div class="grow small dim">Drop a file anywhere on this page, or press Import contacts. ' +
+      'Every row in the file is read; a run that stops continues from where it stopped.</div>' +
+      '<button class="btn primary" data-act="import">Import contacts</button>' +
+      '<button class="btn" data-act="import-path-quick">Import from this computer</button></div></div>';
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
       '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
@@ -2905,6 +2927,7 @@
       });
     },
     import: function () { importModal(); },
+    'import-path-quick': function () { importModal(null, true); },
     'hyros-accounts': function () {
       var out = $('#ads-out');
       if (out) out.innerHTML = '<div class="small dim">Reading ad accounts from Hyros...</div>';
@@ -3653,7 +3676,7 @@
       (r.examined ? ' &middot; ' + num(r.examined) + ' rows read' : '') + '</div></div>';
   }
 
-  function importModal() {
+  function importModal(dropFile, startOnPath) {
     openModal({
       title: 'Import contacts',
       subtitle: 'CSV, TSV, Excel, Parquet, DuckDB or SQLite. An email is welcome but no longer ' +
@@ -3681,8 +3704,6 @@
         '<div class="row"><div class="field"><label>Filter <span class="dim">(SQL WHERE, DuckDB ' +
         'or SQLite only)</span></label><input type="text" id="imp-where" ' +
         'placeholder="best_email IS NOT NULL"></div>' +
-        '<div class="field"><label>Max rows</label>' +
-        '<input type="number" id="imp-limit" value="5000" min="1" max="100000000"></div></div>' +
         '<label class="check"><input type="checkbox" id="imp-only-email"> ' +
         'Only rows that have an email</label>' +
         '<div class="toolbar" style="margin-top:12px">' +
@@ -3706,11 +3727,17 @@
           };
         });
 
+        if (startOnPath) {
+          modeButtons.forEach(function (button) {
+            if (button.dataset.impMode === 'path' && button.onclick) button.onclick();
+          });
+        }
+
         // ---- upload
         var drop = $('#drop', root);
         var input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.csv,.tsv,.txt,.xlsx,.xlsm,.parquet,.duckdb,.ddb,.db,.sqlite,.sqlite3';
+        input.accept = '.csv,.tsv,.txt,.json,.xlsx,.xlsm,.parquet,.duckdb,.ddb,.db,.sqlite,.sqlite3';
         input.style.display = 'none';
         root.appendChild(input);
         drop.onclick = function () { input.click(); };
@@ -3809,13 +3836,16 @@
           }
         }
 
+        if (dropFile) setTimeout(function () { handleFile(dropFile); }, 60);
+
         function run() {
           var path = $('#imp-path-input', root).value.trim();
           if (!path) return toast('Paste the path to a file first', 'err');
           var body = {
             path: path,
-            limit: Number($('#imp-limit', root).value) || 5000,
+            limit: 0,
             where: $('#imp-where', root).value,
+            restart: $('#imp-restart', root).checked,
             update_existing: $('#imp-update', root).checked,
             only_email: $('#imp-only-email', root).checked
           };
