@@ -34,12 +34,15 @@ TLDS = ("shop", "store", "online", "site", "website", "top", "xyz", "vip", "live
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_RX = re.compile(r"\+?\d[\d\s().-]{7,}\d")
 META_DOC_ID = "24396387196335141"
+RED_POINTS = {"name": "Red Points - brand protection",
+              "affiliate_url": "https://www.redpoints.com/request-demo-affiliate/?referredid=255256383275"}
 
 
 def ensure_tables():
-    db.execute("CREATE TABLE IF NOT EXISTS brands (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-               "name TEXT DEFAULT '', website TEXT DEFAULT '', company TEXT DEFAULT '', "
-               "email TEXT DEFAULT '', created_ts INTEGER DEFAULT 0)")
+    # Brands typed here are names, not domains, so they cannot live in the `brands` table (its
+    # domain column is NOT NULL UNIQUE). This one is ours.
+    db.execute("CREATE TABLE IF NOT EXISTS osint_brands (name TEXT PRIMARY KEY, "
+               "created_ts INTEGER DEFAULT 0)")
     db.execute("CREATE TABLE IF NOT EXISTS osint_domains (domain TEXT PRIMARY KEY, "
                "title TEXT DEFAULT '', description TEXT DEFAULT '', business TEXT DEFAULT '', "
                "emails TEXT DEFAULT '', phones TEXT DEFAULT '', text TEXT DEFAULT '', "
@@ -51,7 +54,7 @@ def _key(value):
 
 
 def brand_list(text=""):
-    """Brands to protect: the textarea, the brands table, or the brand offer keywords."""
+    """Brands to protect: the textarea, the names saved for OSINT, the brands table, or the offer."""
     names = []
     for line in str(text or "").replace(",", "\n").splitlines():
         name = " ".join(line.split()).strip()
@@ -59,6 +62,8 @@ def brand_list(text=""):
             names.append(name)
     if not names:
         ensure_tables()
+        names = [row["name"] for row in db.rows("SELECT name FROM osint_brands WHERE name<>''")]
+    if not names:
         names = [row["name"] for row in db.rows("SELECT name FROM brands WHERE name<>''")]
     if not names:
         offer = db.one("SELECT keywords FROM offers WHERE lower(category) LIKE '%brand%' "
@@ -70,9 +75,9 @@ def brand_list(text=""):
 
 def save_brands(names):
     ensure_tables()
-    db.execute("DELETE FROM brands")
+    db.execute("DELETE FROM osint_brands")
     for name in names:
-        db.insert("brands", {"name": name, "created_ts": db.now()})
+        db.insert("osint_brands", {"name": name, "created_ts": db.now()})
     return len(names)
 
 
@@ -316,6 +321,7 @@ def state():
     ensure_tables()
     red_points = db.one("SELECT name, affiliate_url FROM offers WHERE category='brand' "
                         "OR lower(name) LIKE '%red point%' LIMIT 1")
+    red_points = dict(red_points) if red_points else dict(RED_POINTS)
     return {"ok": True, "brands": len(brand_list()),
             "fake_shops": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='fake_shop'"),
             "recent_fake_shops": db.rows(
@@ -324,6 +330,6 @@ def state():
             "lookalikes": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='new_lookalike_domain'"),
             "meta_advertisers": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='meta_advertiser'"),
             "profiled": db.scalar("SELECT COUNT(*) FROM osint_domains"),
-            "red_points": dict(red_points) if red_points else {},
+            "red_points": red_points,
             "scam_jobs": ["brand_watch", "phishing", "scam_radar", "meta_ads"],
-            "brand_offer": dict(red_points) if red_points else {}}
+            "brand_offer": red_points}

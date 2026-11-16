@@ -1,3 +1,49 @@
+## [1.32.1] - 2026-11-16
+
+Two fixes in the OSINT tab, found by running its tests on a fresh database.
+
+### Fixed
+
+- **The radar could not save the brands.** They were written to the existing `brands` table, whose
+  `domain` column is `NOT NULL UNIQUE` (it holds domains, not names), so a scan died with
+  `IntegrityError: NOT NULL constraint failed: brands.domain`. Brands typed in the OSINT tab now
+  live in their own `osint_brands` table; the existing `brands` table is still read as a fallback.
+- **Red Points card was empty before the first offer sync.** `state()` returned `{}` when no brand
+  offer row existed yet; it now falls back to the built-in Red Points affiliate link.
+
+## [1.32.0] - 2026-11-16
+
+A new tab for the Red Points side of the business, and three tools behind it.
+
+### Added
+
+- **OSINT tab** (sidebar, above Domains): KPIs for fake shops, lookalikes and profiled domains; a
+  **Scam jobs** section that runs and shows the three watchers in place (*Fraud watch: phishing
+  domains*, *Fake-shop radar*, *Brand watch: lookalikes & scam clones*) with their schedule,
+  enabled toggle, **Run now** and **Last log** - the same jobs as the Daily page, not copies; the
+  fake-shop radar form; and the **Red Points** affiliate card with its disclosure.
+- **`engine/osint.py`**:
+  - `scan()` - the fake-shop radar: reads a domains-monitor zip, txt, CSV or URL, matches domain
+    labels against the protected brands (brand inside the domain, brand + shop/store/outlet word,
+    brand on a shop TLD), stores every hit as a `fake_shop` signal.
+  - `profile()` / `profile_new()` - what a bare domain is: title, description, visible text,
+    emails, phones, a guess at the business, saved in `osint_domains` and back-filled into the
+    lead's domain.
+  - `meta_ads()` - advertisers in the public Meta Ad Library through its GraphQL endpoint (no
+    key), walked, deduplicated and stored as `meta_advertiser` signals.
+- **`engine/jobs/osint.py`**: *Fake-shop radar* (Signals 06:20), *Meta Ad Library prospects*
+  (Signals Mon 09:00), *Profile bare domains* (Data 11:00).
+- Routes `/api/osint/state|scan|profile|meta-ads`, and `osint` in the state payload.
+- **Meta Ad Library card** lives on the **Ads** page, above the platform sub-tabs.
+- **Identify a bare domain** card lives on the **Domains** page, under the OpenStreetMap card.
+- `tests/test_osint.py`: brand matching (hit, shop TLD, own domain, unrelated), a txt feed scan
+  that stores hits, refusal without brands, the Red Points link, the Ad Library walker, and a
+  mocked page turned into a profile.
+
+### Tests
+
+484 (was 474), all passing.
+
 ## [1.31.0] - 2026-11-16
 
 OpenStreetMap and the hot list are native now - no scripts outside the app.
