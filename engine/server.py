@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, dorks, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, dorks, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, treg, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -639,6 +639,36 @@ def r_osint_discover(p):
 def r_osint_enrich(p):
     try:
         return osint.enrich(str(p.get("domain") or ""))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_treg_status(p):
+    return treg.status()
+
+
+def r_treg_search(p):
+    try:
+        return treg.catalog_search(str(p.get("q") or ""), limit=int(p.get("limit") or 20))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_treg_verify(p):
+    try:
+        emails = [email.strip() for email in str(p.get("emails") or p.get("email") or "").replace(",", "\n").splitlines() if email.strip()]
+        if not emails:
+            return {"ok": False, "error": "Give an email address."}
+        results = [treg.verify_email(email) for email in emails[:25]]
+        return {"ok": True, "results": results, "checked": len(results),
+                "free": all(row.get("free") for row in results if row.get("ok"))}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_treg_maps(p):
+    try:
+        return treg.maps_search(str(p.get("query") or ""), limit=int(p.get("limit") or 20))
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1761,6 +1791,10 @@ ROUTES_POST = {
     "/api/osint/dorks": r_osint_dorks,
     "/api/osint/discover": r_osint_discover,
     "/api/osint/enrich": r_osint_enrich,
+    "/api/treg/status": r_treg_status,
+    "/api/treg/search": r_treg_search,
+    "/api/treg/verify": r_treg_verify,
+    "/api/treg/maps": r_treg_maps,
 }
 
 

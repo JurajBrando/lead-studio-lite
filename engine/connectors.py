@@ -37,6 +37,7 @@ def status():
         "hunter": bool((s.get("hunter_key") or "").strip()),
         "ai": bool((s.get("ai_key") or "").strip() and (s.get("ai_model") or "").strip()),
         "serper": bool((s.get("serper_key") or "").strip()),
+        "treg": bool((s.get("treg_key") or "").strip()),
         "ai_base": (s.get("ai_base") or "").strip() or DEFAULT_AI_BASE,
         "ai_model": (s.get("ai_model") or "").strip(),
     }

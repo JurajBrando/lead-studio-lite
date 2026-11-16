@@ -1,3 +1,32 @@
+## [1.35.0] - 2026-11-16
+
+Treg is wired in - one token, 4,100+ tools, paid per call.
+
+### Added
+
+- **`engine/treg.py`**: the team token from Settings -> Connectors, `catalog_search()` over
+  `GET /catalog/search`, `call()` over `POST /call/<endpoint-id>` with a JSON body and the
+  `X-Treg-Token` header, and the two capabilities Lead Studio needs: `verify_email()` on
+  `treg.people.email.verify` and `maps_search()` on `treg.google.serp.maps`. Every answer reports
+  what it cost (`charged_micro` from `_treg`), so a free route and a paid one are distinguishable.
+- **Settings -> Connectors**: a Treg team token field, saved like the other keys (`has_treg`).
+- **OSINT tab**: a *Treg tools* card - verify up to 25 addresses at once, or find Google Maps
+  businesses, with the places (name, address, phone, website, rating, review count) listed.
+- Routes `/api/treg/status|search|verify|maps`.
+
+### Measured (live, this machine)
+
+- Token valid: team `brandojuraj-s-team`, scope `team`.
+- `treg.people.email.verify`: answered through ContactOut on a **free** route (`charged_micro: 0`)
+  and through Orbisearch on a paid one ($0.00124) - the card shows which.
+- `treg.google.serp.maps` for "coffee Bratislava": 3 places, **$0.00023** per call, first result
+  `Urban House`, Laurinska 14, +421 911 755 205, rating 4.7 from 14 279 reviews.
+
+### Tests
+
+504 (was 498): the missing token, the team claims decoded from the token, a verified address on a
+free route, Maps places plus the charge, a 422 reported with its detail, and catalog search ids.
+
 ## [1.34.1] - 2026-11-16
 
 ### Fixed

@@ -757,6 +757,18 @@
       '<span class="small dim">finds fakes before any scam feed does</span></div>' +
       '<div id="osint-crt-result" class="small dim mt"></div></div>';
 
+    html += '<div class="card mt"><div class="card-head"><h2>Treg tools</h2>' +
+      '<div class="spacer"></div><span class="small dim">one token, pay per call</span></div>' +
+      '<div class="grid cols-3"><div class="field"><label>Verify emails</label>' +
+      '<input id="treg-emails" placeholder="a@b.com, c@d.com"></div>' +
+      '<div class="field"><label>Google Maps businesses</label>' +
+      '<input id="treg-maps" placeholder="coffee Bratislava"></div>' +
+      '<div class="field"><label>&nbsp;</label><div class="toolbar" style="margin:0">' +
+      '<button class="btn primary" data-act="treg-verify">Verify</button>' +
+      '<button class="btn" data-act="treg-maps-run">Find places</button></div></div></div>' +
+      '<div id="treg-result" class="small dim mt">Email verification is usually free on a public route, otherwise about $0.001; ' +
+      'Maps costs a fraction of a cent per call.</div></div>';
+
     html += '<div class="card mt"><div class="card-head"><h2>Recent fake shops</h2></div>' +
       ((o.recent_fake_shops || []).length
         ? '<div class="table-wrap"><table><thead><tr><th>Domain</th><th>Brand</th><th>Why</th></tr></thead><tbody>' +
@@ -3089,6 +3101,34 @@
         refresh();
       });
     },
+    'treg-verify': function (el) {
+      var box = $('#treg-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Verifying...';
+      call('/api/treg/verify', { emails: ($('#treg-emails') || {}).value || '' }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = r.results.map(function (row) {
+          return '<div>' + h(row.email || '') + ' - <b>' + h(row.status || 'error') + '</b>' +
+            (row.provider ? ' <span class="dim">via ' + h(row.provider) + (row.free ? ' · free' : '') + '</span>' : '') +
+            (row.error ? ' <span style="color:var(--red)">' + h(row.error) + '</span>' : '') + '</div>';
+        }).join('');
+      });
+    },
+    'treg-maps-run': function (el) {
+      var box = $('#treg-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Asking Google Maps through treg...';
+      call('/api/treg/maps', { query: ($('#treg-maps') || {}).value || '' }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + num(r.count) + '</b> places · cost $' +
+          ((r.charged_micro || 0) / 1e6).toFixed(5) + '</div>' + (r.places || []).slice(0, 20).map(function (p) {
+            return '<div class="small">' + h(p.name) + ' <span class="dim">' + h(p.address) +
+              (p.phone ? ' · ' + h(p.phone) : '') + '</span></div>';
+          }).join('');
+      });
+    },
     'osint-dorks': function (el) {
       var box = $('#osint-dorks-result');
       if (el) el.disabled = true;
@@ -3452,7 +3492,7 @@
     },
     'save-settings': function () {
       var conn = {};
-      [['set-hunter', 'hunter_key'], ['set-aikey', 'ai_key'], ['set-serper', 'serper_key']]
+      [['set-hunter', 'hunter_key'], ['set-aikey', 'ai_key'], ['set-serper', 'serper_key'], ['set-treg', 'treg_key']]
         .forEach(function (pair) {
           var el = $('#' + pair[0]);
           if (el && el.value.trim()) conn[pair[1]] = el.value.trim();
