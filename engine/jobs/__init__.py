@@ -9,7 +9,7 @@ from .base import Context, Job  # noqa: F401  (re-exported for job modules)
 
 MODULES = ("nrd", "mx", "bankruptcy", "merge", "ads", "hiring", "cc", "cc_hf", "cc_bulk", "cc_contacts", "phishing",
            "contacts", "ai_enrich", "brand_watch",
-           "pipeline_run", "osm_business", "hot_list")
+           "pipeline_run", "osm_business", "hot_list", "osint")
 
 _cache = None
 

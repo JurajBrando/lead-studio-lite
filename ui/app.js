@@ -255,6 +255,7 @@
     if (state.view === 'dashboard') html = viewDashboard(d);
     else if (state.view === 'leads') html = viewLeads(d);
     else if (state.view === 'domains') html = viewDomains(d);
+    else if (state.view === 'osint') html = viewOsint(d);
     else if (state.view === 'sequences') html = viewSequences(d);
     else if (state.view === 'inbox') html = viewInbox(d);
     else if (state.view === 'automation') html = viewAutomation(d);
@@ -665,6 +666,86 @@
       '<div class="small dim">' + h(r.place || '') + ' · ' + h((r.tags || []).join(', ')) + '</div>';
   }
 
+  var OSINT_JOBS = ['phishing', 'scam_radar', 'brand_watch'];
+
+  function loadOsintJobs() {
+    var box = $('#osint-jobs');
+    if (!box) return;
+    call('/api/jobs').then(function (res) {
+      if (!res.ok) { box.innerHTML = '<div class="small dim">' + h(res.error) + '</div>'; return; }
+      var jobs = (res.jobs || []).filter(function (job) { return OSINT_JOBS.indexOf(job.key) >= 0; });
+      if (!jobs.length) {
+        box.innerHTML = '<div class="empty"><div class="big">No scam jobs registered</div></div>';
+        return;
+      }
+      box.innerHTML = jobs.map(function (j) {
+        var last = j.last_run || {};
+        var badge = j.running ? '<span class="badge blue">running</span>'
+          : (j.enabled ? '<span class="badge green">scheduled</span>' : '<span class="badge grey">off</span>');
+        return '<div class="card tight" style="margin-bottom:10px">' +
+          '<div class="card-head" style="margin-bottom:6px"><div><h3>' + h(j.name) + '</h3>' +
+          '<div class="card-sub">' + h(j.description) + '</div></div><div class="spacer"></div>' + badge + '</div>' +
+          '<div class="toolbar" style="margin:0">' +
+          '<input type="text" class="job-sched" data-key="' + h(j.key) + '" value="' + h(j.schedule || '') +
+          '" placeholder="daily 06:30" style="max-width:170px">' +
+          '<label class="check"><input type="checkbox" class="job-en" data-key="' + h(j.key) + '"' +
+          (j.enabled ? ' checked' : '') + '> enabled</label>' +
+          '<button class="btn sm" data-run="' + h(j.key) + '"' + (j.running ? ' disabled' : '') + '>Run now</button>' +
+          '<button class="btn sm ghost" data-log="' + h(j.key) + '">Last log</button>' +
+          '<div class="spacer" style="flex:1"></div>' +
+          '<span class="small dim nowrap">' + (last.started_ts ?
+            (last.status === 'ok' ? 'last ok ' : 'last failed ') + fmtWhen(last.started_ts) : 'never run') +
+          (j.next_run_ts ? ' · next ' + fmtWhen(j.next_run_ts) : ' · manual') + '</span></div></div>';
+      }).join('');
+      wireAutomation();
+    });
+  }
+
+  function viewOsint(d) {
+    var o = (d && d.osint) || {};
+    var rp = o.red_points || {};
+    var html = pageHead('OSINT - fake shops & scams',
+      'The Red Points side of the business: which domains are faking the brands you protect, ' +
+      'what the watchers found, and what happens next.',
+      '<button class="btn" data-act="osint-refresh">Refresh</button>');
+    html += '<div class="grid cols-3" style="margin-bottom:14px">' +
+      kpi('Fake shops', num(o.fake_shops), 'matched against your brands', 'red') +
+      kpi('Lookalikes', num(o.lookalikes), 'from the brand watch', 'amber') +
+      kpi('Domains profiled', num(o.profiled), 'identified from the site', '') + '</div>';
+
+    html += '<div class="nav-label" style="padding-left:2px">Scam jobs</div>' +
+      '<div class="small dim" style="margin:-4px 0 10px 2px">The watchers run from here; what ' +
+      'they find lands in this tab and in the Daily feed.</div>' +
+      '<div id="osint-jobs"><div class="small dim">Loading the jobs...</div></div>';
+    setTimeout(loadOsintJobs, 20);
+
+    html += '<div class="card"><div class="card-head"><h2>Fake-shop radar</h2><div class="spacer"></div>' +
+      '<span class="small dim">domains-monitor feed x the brands you protect</span></div>' +
+      '<div class="field"><label>Domains feed (zip, txt or URL)</label>' +
+      '<input id="osint-source" placeholder="C:\\path\\dailyupdate.zip  or  https://...zip"></div>' +
+      '<div class="field mt"><label>Brands to protect (one per line, optional)</label>' +
+      '<textarea id="osint-brands" rows="3" placeholder="type a few brand names, or leave empty to use the brands saved on the server"></textarea></div>' +
+      '<div class="toolbar mt"><button class="btn primary" data-act="osint-scan">Run the radar</button>' +
+      '<span class="small dim">' + num(o.brands) + ' brands saved</span></div>' +
+      '<div id="osint-result" class="small dim mt"></div></div>';
+
+    html += '<div class="card mt"><div class="card-head"><h2>Red Points - brand protection</h2>' +
+      '<div class="spacer"></div><span class="small dim">affiliate</span></div>' +
+      '<div class="small dim">' + h(rp.name || 'Red Points - brand protection') + '</div>' +
+      '<div class="toolbar mt"><a class="btn primary" href="' + h(rp.affiliate_url || 'https://www.redpoints.com/request-demo-affiliate/?referredid=255256383275') + '" target="_blank" rel="noopener sponsored">Open Red Points</a>' +
+      '<span class="small dim">Affiliate link - we may earn a commission.</span></div></div>';
+
+    html += '<div class="card mt"><div class="card-head"><h2>Recent fake shops</h2></div>' +
+      ((o.recent_fake_shops || []).length
+        ? '<div class="table-wrap"><table><thead><tr><th>Domain</th><th>Brand</th><th>Why</th></tr></thead><tbody>' +
+          o.recent_fake_shops.map(function (row) {
+            return '<tr><td class="mono">' + h(row.domain) + '</td><td>' + h(row.company) +
+              '</td><td class="small dim">' + h(row.title) + '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="small dim">Nothing yet - run the radar on a feed.</div>') + '</div>';
+    return html;
+  }
+
   function viewDomains(d) {
     var q = state.domains;
     var s = q.stats || {};
@@ -715,6 +796,15 @@
       'is matched against the name/craft/shop tags, and the answer is cached.</div>' +
       '<div class="small dim mt">Data &copy; OpenStreetMap contributors, ODbL. Emailing people ' +
       'found this way is your GDPR call.</div></div>';
+
+    html += '<div class="card mt" id="profile-card"><div class="card-head"><h2>Identify a bare ' +
+      'domain</h2><div class="spacer"></div><span class="small dim">title, description, emails, ' +
+      'phones</span></div>' +
+      '<div class="toolbar"><input id="osint-domain" placeholder="example.sk" style="max-width:260px">' +
+      '<button class="btn primary" data-act="osint-profile">Profile it</button>' +
+      '<button class="btn" data-act="osint-profile-new">Profile 20 leads with no email</button></div>' +
+      '<div id="osint-profile-result" class="small dim mt">Turns a domain with no email into ' +
+      'something the enrichment and the offer fit can use.</div></div>';
 
     html += '<div class="card tight mt" style="padding:0">' +
       '<div class="toolbar" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--line)">' +
@@ -1396,6 +1486,16 @@
     var html = pageHead('Ads',
       'The advertising stack in one place: Metricool for the ad accounts, then the tracking and ' +
       'management tools on their own sub-tab.');
+    html += '<div class="card mb"><div class="card-head"><h2>Meta Ad Library - HYROS ICP</h2>' +
+      '<div class="spacer"></div><span class="small dim">free, no key</span></div>' +
+      '<div class="grid cols-3"><div class="field"><label>Keywords</label>' +
+      '<input id="osint-meta-keywords" placeholder="shopify store, skincare, supplements"></div>' +
+      '<div class="field"><label>Country code</label><input id="osint-meta-country" value="SK"></div>' +
+      '<div class="field"><label>&nbsp;</label>' +
+      '<button class="btn primary" data-act="osint-meta">Find advertisers</button></div></div>' +
+      '<div id="osint-meta-result" class="small dim mt">Stores running Meta ads are the people ' +
+      'who need attribution most - the Ad Library answers without a key.</div></div>';
+
     html += '<div class="toolbar" style="margin-bottom:12px">' + ADS_TABS.map(function (t) {
       return '<button class="btn sm ' + (tab === t.key ? 'primary' : 'ghost') +
         '" data-act="ads-tab" data-tab="' + t.key + '">' + h(t.label) + '</button>';
@@ -2948,6 +3048,66 @@
       state.selection.clear();
       render();
       loadLeads();
+    },
+    'osint-refresh': function () { refresh(); },
+    'osint-scan': function (el) {
+      var box = $('#osint-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Scanning the feed...';
+      call('/api/osint/scan', { source: ($('#osint-source') || {}).value || '',
+        brands: ($('#osint-brands') || {}).value || '', limit: 5000 }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + num(r.scanned) + '</b> domains scanned against <b>' +
+          num(r.brands) + '</b> brands: <b>' + num(r.hit_count) + '</b> fake shops</div>' +
+          (r.hits || []).slice(0, 30).map(function (hit) {
+            return '<div class="small mono">' + h(hit.domain) + ' ~ ' + h(hit.brand) + ' <span class="dim">(' + h(hit.why) + ')</span></div>';
+          }).join('');
+        toast(num(r.hit_count) + ' fake shops found');
+        refresh();
+      });
+    },
+    'osint-meta': function (el) {
+      var box = $('#osint-meta-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Asking the Ad Library...';
+      call('/api/osint/meta-ads', { keywords: ($('#osint-meta-keywords') || {}).value || '',
+        country: ($('#osint-meta-country') || {}).value || '' }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + num(r.found) + '</b> advertisers</div>' +
+          (r.advertisers || []).slice(0, 40).map(function (row) {
+            return '<div class="small">' + h(row.page) + ' <span class="dim">' + h(row.domain || row.page_url || '') + '</span></div>';
+          }).join('');
+        refresh();
+      });
+    },
+    'osint-profile': function (el) {
+      var box = $('#osint-profile-result');
+      if (el) el.disabled = true;
+      call('/api/osint/profile', { domain: ($('#osint-domain') || {}).value || '' }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + h(r.domain) + '</b> - ' + h(r.business || 'unknown') +
+          '</div><div class="small">' + h(r.title) + '</div><div class="small dim">' + h(r.description) +
+          '</div><div class="small">Emails: ' + h(r.emails || 'none') + ' | Phones: ' + h(r.phones || 'none') + '</div>';
+        refresh();
+      });
+    },
+    'osint-profile-new': function (el) {
+      var box = $('#osint-profile-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Visiting 20 domains...';
+      call('/api/osint/profile', { limit: 20 }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) return toast(r.error || 'Could not profile the domains', 'err');
+        if (box) box.innerHTML = '<div><b>' + num(r.profiled) + '</b> domains profiled</div>' +
+          (r.domains || []).map(function (row) {
+            return '<div class="small">' + h(row.domain) + ' - ' + h(row.title || '') + '</div>';
+          }).join('');
+        toast(num(r.profiled) + ' domains profiled');
+        refresh();
+      });
     },
     'domain-refresh': function () { loadDomains(); },
     'hot-build': function (el) {
@@ -4959,7 +5119,7 @@
   }
 
 
-  var VIEWS = ['dashboard', 'leads', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'ads', 'agent', 'mailboxes', 'settings'];
+  var VIEWS = ['dashboard', 'leads', 'osint', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'ads', 'agent', 'mailboxes', 'settings'];
 
   function go(view) {
     if (view === 'daily') view = 'signals';

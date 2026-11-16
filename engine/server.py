@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osm, pipeline, progress, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -51,6 +51,7 @@ def r_state():
         conn.pop(secret_key, None)
     public["connectors"] = conn
     public["connector_status"] = connectors.status()
+    public["osint"] = osint.state()
     oauth_public = dict(public.get("oauth") or {})
     for secret in ("google_client_secret", "microsoft_client_secret"):
         oauth_public["has_" + secret] = bool(str(oauth_public.get(secret) or "").strip())
@@ -586,6 +587,36 @@ def r_hot_today(p):
     if p.get("table"):
         answer["rows"] = answer["rows"][:300]
     return answer
+
+
+def r_osint_state(p):
+    return osint.state()
+
+
+def r_osint_scan(p):
+    try:
+        return osint.scan(str(p.get("source") or ""), brands_text=str(p.get("brands") or ""),
+                          limit=int(p.get("limit") or 5000))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_osint_profile(p):
+    try:
+        if p.get("domain"):
+            return osint.profile(str(p["domain"]))
+        return osint.profile_new(limit=int(p.get("limit") or 20))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_osint_meta_ads(p):
+    try:
+        return osint.meta_ads(str(p.get("keywords") or "shopify store"),
+                              country=str(p.get("country") or ""),
+                              limit=int(p.get("limit") or 25))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def r_lead_import(p):
@@ -1690,6 +1721,10 @@ ROUTES_POST = {
     "/api/osm/import": r_osm_import,
     "/api/osm/status": r_osm_status,
     "/api/hot/today": r_hot_today,
+    "/api/osint/state": r_osint_state,
+    "/api/osint/scan": r_osint_scan,
+    "/api/osint/profile": r_osint_profile,
+    "/api/osint/meta-ads": r_osint_meta_ads,
 }
 
 
