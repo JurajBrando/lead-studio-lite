@@ -433,40 +433,6 @@ def _connector_key(name):
     return key
 
 
-def shodan_favicon(hash_value, limit=50, timeout=30):
-    key = _connector_key("shodan")
-    if not key or not hash_value:
-        return {"ok": False, "error": "No Shodan key."}
-    query = urllib.parse.urlencode({"query": "http.favicon.hash:%s" % hash_value, "limit": limit})
-    request = urllib.request.Request("https://api.shodan.io/shodan/host/search?" + query,
-                                     headers={"User-Agent": UA})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8", "replace") or "{}")
-    hosts = []
-    for match in data.get("matches") or []:
-        hostnames = match.get("hostnames") or []
-        hosts.append({"ip": match.get("ip_str"), "port": match.get("port"),
-                      "hostnames": hostnames[:4], "org": (match.get("org") or "")[:80]})
-    return {"ok": True, "total": data.get("total", len(hosts)), "hosts": hosts[:limit]}
-
-
-def securitytrails_history(domain, timeout=30):
-    key = _connector_key("securitytrails")
-    if not key:
-        return {"ok": False, "error": "No SecurityTrails key."}
-    request = urllib.request.Request(
-        "https://api.securitytrails.com/v1/history/%s/dns/a" % urllib.parse.quote(domain),
-        headers={"APIKEY": key, "User-Agent": UA})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8", "replace") or "{}")
-    records = []
-    for item in (data.get("records") or [])[:40]:
-        records.append({"first_seen": str(item.get("first_seen") or "")[:10],
-                        "last_seen": str(item.get("last_seen") or "")[:10],
-                        "values": [str(v.get("ip") or "") for v in (item.get("values") or [])][:6]})
-    return {"ok": True, "domain": domain, "records": records}
-
-
 def enrich(domain):
     """RDAP + favicon hash + the shop platform - one call per suspect domain."""
     answer = profile(domain)
@@ -520,9 +486,8 @@ def discover(brand, own=(), limit=200):
 
 
 def keys():
-    return {"serper": bool(_connector_key("serper")),
-            "shodan": bool(_connector_key("shodan")),
-            "securitytrails": bool(_connector_key("securitytrails"))}
+    """Only key-gated service left is Serper, which the dork sweep reuses."""
+    return {"serper": bool(_connector_key("serper"))}
 
 
 def state():

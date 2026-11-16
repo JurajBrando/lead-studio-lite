@@ -1,3 +1,17 @@
+## [1.33.1] - 2026-11-16
+
+Only free sources, as asked.
+
+### Removed
+
+- **Shodan and SecurityTrails connectors.** Both need a paid key to answer, so they are gone:
+  `shodan_favicon()`, `securitytrails_history()` and their key flags. The favicon hash stays -
+  a pure-Python MurmurHash3 is computed locally and needs nobody's API - and `keys()` now reports
+  only Serper, which the dork sweep reuses from the existing settings.
+
+Everything else in the OSINT tab is free: OpenStreetMap/Overpass, crt.sh certificate transparency,
+rdap.org WHOIS, the Wayback availability API, Phishing.Database, and the domains-monitor feed.
+
 ## [1.33.0] - 2026-11-16
 
 Four ways to find a fake shop before it is famous, all in the OSINT tab.
