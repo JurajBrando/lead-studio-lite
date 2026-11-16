@@ -1,3 +1,21 @@
+## [1.36.1] - 2026-11-16
+
+### Fixed
+
+- **Uploading a file looked like it did nothing.** The progress and the result of an upload were
+  written into `#imp-result`, which lives inside the *File on this computer* tab - hidden while the
+  *Upload a file* tab is open. The upload tab now has its own result box: choosing a file shows
+  `Reading <name> (KB)...`, the progress bar fills, and the summary (imported, existing, invalid)
+  appears where the user is looking. Verified through the same base64 path the browser uses:
+  3 rows uploaded, 3 imported.
+- **Three buttons on Leads that all opened the same dialog.** The header *Import* and the card's
+  *Import from this computer* are gone; the Leads page has one **Import contacts** button (the
+  empty-state *Import a file* stays, since it only shows when there are no leads).
+
+### Also
+
+- The dialog says JSON is accepted, matching what the importer reads.
+
 ## [1.36.0] - 2026-11-16
 
 Every row, resume where it stopped, and the Contacts import the original app had.

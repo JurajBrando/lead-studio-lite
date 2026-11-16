@@ -480,7 +480,6 @@
       '<button class="btn" data-act="export">CSV</button>' +
       '<button class="btn" data-act="export-parquet">Parquet</button>' +
       '<button class="btn" data-act="export-duckdb">DuckDB</button>' +
-      '<button class="btn" data-act="import">Import</button>' +
       '<button class="btn" data-act="bulk-data">Bulk data</button>' +
       '<button class="btn primary" data-act="add-lead">Add lead</button>');
 
@@ -490,8 +489,7 @@
       '<div class="row" style="align-items:center;gap:12px">' +
       '<div class="grow small dim">Drop a file anywhere on this page, or press Import contacts. ' +
       'Every row in the file is read; a run that stops continues from where it stopped.</div>' +
-      '<button class="btn primary" data-act="import">Import contacts</button>' +
-      '<button class="btn" data-act="import-path-quick">Import from this computer</button></div></div>';
+      '<button class="btn primary" data-act="import">Import contacts</button></div></div>';
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
       '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
@@ -2927,7 +2925,6 @@
       });
     },
     import: function () { importModal(); },
-    'import-path-quick': function () { importModal(null, true); },
     'hyros-accounts': function () {
       var out = $('#ads-out');
       if (out) out.innerHTML = '<div class="small dim">Reading ad accounts from Hyros...</div>';
@@ -3679,7 +3676,7 @@
   function importModal(dropFile, startOnPath) {
     openModal({
       title: 'Import contacts',
-      subtitle: 'CSV, TSV, Excel, Parquet, DuckDB or SQLite. An email is welcome but no longer ' +
+      subtitle: 'CSV, TSV, JSON, Excel, Parquet, DuckDB or SQLite. An email is welcome but no longer ' +
         'required: a company with a description is a contact too.',
       body: '<div class="sv-tabs" style="margin-bottom:14px">' +
         '<button class="sv-tab on" data-imp-mode="upload">Upload a file</button>' +
@@ -3687,7 +3684,7 @@
         '</div>' +
         '<div id="imp-upload">' +
         '<div class="drop" id="drop"><div class="big">Drop a file here</div>' +
-        '<div class="small">or click to choose - CSV, TSV, Excel, Parquet, DuckDB, SQLite</div>' +
+        '<div class="small">or click to choose - CSV, TSV, JSON, Excel, Parquet, DuckDB, SQLite</div>' +
         '<div class="progress hidden" id="imp-progress"><div class="fill" id="imp-fill"></div></div></div>' +
         '</div>' +
         '<div id="imp-path" class="hidden">' +
@@ -3751,8 +3748,13 @@
 
         function handleFile(file) {
           var prog = $('#imp-progress', root), fill = $('#imp-fill', root);
-          prog.classList.remove('hidden');
-          fill.style.width = '30%';
+          var box = $('#imp-upload-result', root);
+          if (prog) prog.classList.remove('hidden');
+          if (fill) fill.style.width = '20%';
+          if (box) {
+            box.innerHTML = '<div class="small dim">Reading <b>' + h(file.name) + '</b> (' +
+              Math.round(file.size / 1024) + ' KB)...</div>';
+          }
           var reader = new FileReader();
           reader.onload = function () {
             var bytes = new Uint8Array(reader.result);
@@ -3761,12 +3763,12 @@
               b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
             }
             b64 = btoa(b64);
-            fill.style.width = '70%';
+            if (fill) fill.style.width = '60%';
             startImport({
               name: file.name, b64: b64,
               update_existing: $('#imp-update', root).checked,
               only_email: $('#imp-only-email', root).checked
-            }, root);
+            }, root, 'imp-upload-result');
           };
           reader.readAsArrayBuffer(file);
         }
@@ -3854,8 +3856,8 @@
           startImport(body, root);
         }
 
-        function startImport(body, scope) {
-          var box = $('#imp-result', scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
+        function startImport(body, scope, boxId) {
+          var box = $('#' + (boxId || 'imp-result'), scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
           if (bar) bar.classList.remove('hidden');
           if (fill) fill.style.width = '2%';
           if (box) box.innerHTML = '<div class="small dim">Starting the import...</div>';
@@ -3867,12 +3869,12 @@
               }
               return;
             }
-            watchImport(r.import_id, scope);
+            watchImport(r.import_id, scope, boxId);
           });
         }
 
-        function watchImport(importId, scope) {
-          var box = $('#imp-result', scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
+        function watchImport(importId, scope, boxId) {
+          var box = $('#' + (boxId || 'imp-result'), scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
           if (bar) bar.classList.remove('hidden');
           var timer = setInterval(function () {
             call('/api/import/progress', { id: importId }).then(function (r) {
