@@ -12,7 +12,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, dorks, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, verify, video
 from . import window
 from . import config, db, picker
 from .jobs import cc as cc_job
@@ -606,6 +606,39 @@ def r_osint_profile(p):
         if p.get("domain"):
             return osint.profile(str(p["domain"]))
         return osint.profile_new(limit=int(p.get("limit") or 20))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_osint_dorks(p):
+    try:
+        return dorks.sweep_brands(str(p.get("brands") or ""),
+                                  own_domains=[d for d in str(p.get("own") or "").split(",") if d.strip()],
+                                  per_brand=int(p.get("per_brand") or 5),
+                                  limit=int(p.get("limit") or 200))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def r_osint_discover(p):
+    brands = str(p.get("brands") or "")
+    names = [" ".join(line.split()) for line in brands.replace(",", "\n").splitlines() if line.strip()]
+    if not names:
+        return {"ok": False, "error": "Type a brand to search certificates for."}
+    found, errors = [], []
+    for brand in names[:10]:
+        try:
+            answer = osint.discover(brand, limit=int(p.get("limit") or 200))
+            found.extend(answer["candidates"])
+        except ValueError as exc:
+            errors.append(str(exc))
+    return {"ok": True, "candidates": found[:300], "count": len(found),
+            "error": "; ".join(errors[:2]) if not found else ""}
+
+
+def r_osint_enrich(p):
+    try:
+        return osint.enrich(str(p.get("domain") or ""))
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1725,6 +1758,9 @@ ROUTES_POST = {
     "/api/osint/scan": r_osint_scan,
     "/api/osint/profile": r_osint_profile,
     "/api/osint/meta-ads": r_osint_meta_ads,
+    "/api/osint/dorks": r_osint_dorks,
+    "/api/osint/discover": r_osint_discover,
+    "/api/osint/enrich": r_osint_enrich,
 }
 
 

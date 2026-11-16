@@ -1,5 +1,5 @@
 """The OSINT jobs: fake-shop radar, Meta Ad Library prospects, bare-domain profiling."""
-from .. import osint
+from .. import dorks, osint
 from .base import Job, Context
 
 
@@ -29,6 +29,29 @@ def run_profile(ctx):
     return ctx.summary(ok=True, profiled=answer["profiled"])
 
 
+def run_dorks(ctx):
+    answer = dorks.sweep_brands(str(ctx.param("brands") or ""),
+                                own_domains=[d for d in str(ctx.param("own") or "").split(",") if d.strip()],
+                                per_brand=ctx.int_param("per_brand", 5),
+                                limit=ctx.int_param("limit", 200))
+    for row in answer["candidates"][:10]:
+        ctx.log("  %s <- %s" % (row["domain"], row["query"]))
+    return ctx.summary(ok=answer["ok"], brands=answer["brands"],
+                       candidates=len(answer["candidates"]), error=answer["error"])
+
+
+def run_discover(ctx):
+    brands = [" ".join(line.split()) for line in str(ctx.param("brands") or "").splitlines() if line.strip()]
+    total, errors = 0, []
+    for brand in brands[:5]:
+        try:
+            total += osint.discover(brand, limit=ctx.int_param("limit", 200))["count"]
+        except ValueError as exc:
+            errors.append(str(exc))
+    ctx.log("%d brands, %d certificate candidates" % (len(brands), total))
+    return ctx.summary(ok=bool(brands), candidates=total, error="; ".join(errors[:2]))
+
+
 JOBS = [
     Job(key="scam_radar",
         name="Fake-shop radar",
@@ -49,6 +72,25 @@ JOBS = [
         needs_network=True,
         params={"keywords": "shopify store, ecommerce, skincare, supplements", "country": "SK",
                 "limit": 25}),
+    Job(key="dork_sweep",
+        name="Dork sweep (Serper)",
+        group="Signals",
+        description="Runs Google dorks for a brand - official store, shop now, outlet, "
+                    "site:myshopify.com - through Serper and stores every other domain as a "
+                    "fake-shop candidate.",
+        run=run_dorks,
+        schedule="weekly mon 09:30",
+        needs_network=True,
+        params={"brands": "", "own": "", "per_brand": 5, "limit": 200}),
+    Job(key="fake_shop_discover",
+        name="Certificate discovery (crt.sh)",
+        group="Signals",
+        description="Asks certificate transparency which domains ever got a certificate with the "
+                    "brand in the name, before any scam feed lists them.",
+        run=run_discover,
+        schedule="daily 06:40",
+        needs_network=True,
+        params={"brands": "", "limit": 200}),
     Job(key="site_profile",
         name="Profile bare domains",
         group="Data",

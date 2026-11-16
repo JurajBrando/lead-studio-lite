@@ -110,5 +110,78 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(answer["business"], "dental")
 
 
+class FingerprintTests(unittest.TestCase):
+    def test_the_murmur_hash_matches_the_known_vectors(self):
+        self.assertEqual(osint._mmh3_32(b""), 0)
+        self.assertEqual(osint._mmh3_32(b"foo"), -156908512)
+
+    def test_a_favicon_is_hashed_the_way_shodan_does(self):
+        value = osint.favicon_hash(b"\x00\x01\x02\x03")
+        self.assertTrue(value)
+        self.assertEqual(osint.favicon_hash(b""), "")
+
+    def test_the_shop_platform_is_recognised(self):
+        self.assertIn("shopify", osint.platforms_of('src="https://cdn.shopify.com/x.js"'))
+        self.assertIn("woocommerce", osint.platforms_of('class="woocommerce product"'))
+        self.assertEqual(osint.platforms_of(""), [])
+
+
+class DorkTests(unittest.TestCase):
+    def setUp(self):
+        from engine import dorks
+        self.dorks = dorks
+        db.init_db()
+        db.execute("DELETE FROM signals WHERE source='serper-dorks'")
+
+    def test_the_brands_own_domains_are_dropped(self):
+        self.assertTrue(self.dorks.domain_is_own("shop.nike.com", ["nike.com"]))
+        self.assertFalse(self.dorks.domain_is_own("nikeshop.xyz", ["nike.com"]))
+
+    def test_a_sweep_keeps_domains_with_the_brand_and_stores_them(self):
+        results = [
+            {"title": "Nike official store - Nike Shoes", "link": "https://nikeshoes.xyz/",
+             "snippet": "Nike official store"},
+            {"title": "Morning Coffee", "link": "https://morningcoffee.sk/", "snippet": "cafe"},
+            {"title": "Nike.com", "link": "https://nike.com/", "snippet": "Nike"},
+        ]
+        saved = self.dorks.search
+        self.dorks.search = lambda query, num=10: results
+        try:
+            answer = self.dorks.sweep("Nike", own_domains=["nike.com"], per_template=5)
+        finally:
+            self.dorks.search = saved
+        domains = {row["domain"] for row in answer["candidates"]}
+        self.assertEqual(domains, {"nikeshoes.xyz"})
+        stored = db.scalar("SELECT COUNT(*) FROM signals WHERE kind='fake_shop_candidate' "
+                           "AND source='serper-dorks'")
+        self.assertEqual(stored, 1)
+
+    def test_an_empty_brand_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.dorks.sweep("  ")
+
+
+class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        db.execute("DELETE FROM signals WHERE source='crt.sh'")
+
+    def test_certificate_names_are_filtered_to_the_brand(self):
+        saved = osint.certificates
+        osint.certificates = lambda brand, limit=300: [
+            "nikeshop.xyz", "nike.com", "unrelated.sk", "nike-outlet.top"]
+        try:
+            answer = osint.discover("Nike", own=["nike.com"])
+        finally:
+            osint.certificates = saved
+        domains = {row["domain"] for row in answer["candidates"]}
+        self.assertEqual(domains, {"nikeshop.xyz", "nike-outlet.top"})
+        self.assertEqual(db.scalar("SELECT COUNT(*) FROM signals WHERE source='crt.sh'"), 2)
+
+    def test_a_short_brand_is_refused(self):
+        with self.assertRaises(ValueError):
+            osint.discover("a")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

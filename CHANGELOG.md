@@ -1,3 +1,37 @@
+## [1.33.0] - 2026-11-16
+
+Four ways to find a fake shop before it is famous, all in the OSINT tab.
+
+### Added
+
+- **Dork sweep through Serper** (`engine/dorks.py`): seven Google dork templates per brand -
+  official store, shop now, outlet, `intitle:"brand" "buy online"`, free shipping,
+  `site:myshopify.com`, official website - through the Serper key the app already has. Results are
+  filtered (the brand must be mentioned, the brand's own domains are dropped) and stored as
+  `fake_shop_candidate` signals with the query and the result as evidence. Job *Dork sweep
+  (Serper)*, Signals, weekly Mon 09:30.
+- **Favicon + shop platform fingerprint**: a pure-Python MurmurHash3 so the favicon hash matches
+  Shodan's `http.favicon.hash` with no dependency, and recognition of Shopify, WooCommerce, Wix,
+  BigCommerce, Squarespace, Magento, PrestaShop and WordPress. Both are saved on the profile, so
+  "same favicon as a known fake" clusters across the domain catalogue for free.
+- **Certificate discovery (crt.sh)**: asks certificate transparency which domains ever received a
+  certificate with the brand token in the name - before any scam feed lists them. Free, no key.
+  Job *Certificate discovery (crt.sh)*, Signals, daily 06:40.
+- **RDAP enrichment**: registration date, expiry, registrar and nameservers for a suspect domain,
+  free through rdap.org; `enrich()` combines it with the favicon hash and the platform.
+- **Shodan and SecurityTrails connectors**: `shodan_favicon(hash)` finds every host serving the
+  same favicon, `securitytrails_history(domain)` returns the A-record history. Both are ~40 lines,
+  read their keys from the existing connector settings, and the OSINT tab shows whether each key
+  is set.
+- OSINT tab: a *Candidates* KPI, a **Dork sweep** card, a **Certificate discovery** card, and the
+  key badges. Routes `/api/osint/dorks|discover|enrich`.
+
+### Tests
+
+492 (was 484): the MurmurHash vectors (`""`, `"foo"`), the Shodan-style favicon hash, platform
+recognition, dork filtering (brand mentioned, own domain dropped, empty brand refused), and
+certificate filtering with the brand's own domain removed.
+
 ## [1.32.1] - 2026-11-16
 
 Two fixes in the OSINT tab, found by running its tests on a fresh database.

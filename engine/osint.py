@@ -46,6 +46,7 @@ def ensure_tables():
     db.execute("CREATE TABLE IF NOT EXISTS osint_domains (domain TEXT PRIMARY KEY, "
                "title TEXT DEFAULT '', description TEXT DEFAULT '', business TEXT DEFAULT '', "
                "emails TEXT DEFAULT '', phones TEXT DEFAULT '', text TEXT DEFAULT '', "
+               "platforms TEXT DEFAULT '', favicon_hash TEXT DEFAULT '', rdap TEXT DEFAULT '', "
                "fetched_ts INTEGER DEFAULT 0)")
 
 
@@ -208,6 +209,7 @@ def profile(domain, timeout=20):
             break
     cleaned = [email.lower() for email in emails if not email.lower().endswith((".png", ".jpg", ".gif"))]
     business = ""
+    platform = platforms_of(" ".join(texts) + " " + description)
     blob = (" ".join([title, description] + texts)).lower()
     for keyword, label in (("dent", "dental"), ("roof", "roofing"), ("plumb", "plumbing"),
                            ("law", "legal"), ("advertis", "marketing agency"),
@@ -218,12 +220,13 @@ def profile(domain, timeout=20):
             break
     row = {"title": title, "description": description, "business": business,
            "emails": ",".join(sorted(cleaned)[:20]), "phones": ",".join(sorted(phones)[:10]),
-           "text": " ".join(texts)[:4000], "fetched_ts": db.now()}
+           "text": " ".join(texts)[:4000], "platforms": ",".join(platform),
+           "fetched_ts": db.now()}
     db.execute("INSERT INTO osint_domains (domain, title, description, business, emails, phones, "
                "text, fetched_ts) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET "
                "title=excluded.title, description=excluded.description, business=excluded.business, "
                "emails=excluded.emails, phones=excluded.phones, text=excluded.text, "
-               "fetched_ts=excluded.fetched_ts", (
+               "platforms=excluded.platforms, fetched_ts=excluded.fetched_ts", (
                    domain, row["title"], row["description"], row["business"], row["emails"],
                    row["phones"], row["text"], row["fetched_ts"]))
     if cleaned:
@@ -316,6 +319,212 @@ def _ad_items(data):
     return unique
 
 
+PLATFORMS = (
+    ("shopify", ("cdn.shopify.com", "shopify.theme", "shopify-features", "myshopify")),
+    ("woocommerce", ("woocommerce", "wc-ajax", "wp-content/plugins/woocommerce")),
+    ("wix", ("wixstatic", "_wixcss", "wix-code")),
+    ("bigcommerce", ("bigcommerce.com", "stencil-utils")),
+    ("squarespace", ("squarespace.com", "static1.squarespace")),
+    ("magento", ("magento", "mage/cookies")),
+    ("prestashop", ("prestashop",)),
+    ("wordpress", ("wp-content", "wp-includes")),
+)
+
+
+def _mmh3_32(data, seed=0):
+    """MurmurHash3 x86_32 - the hash Shodan calls http.favicon.hash, without a dependency."""
+    data = bytearray(data)
+    length = len(data)
+    c1, c2, h1 = 0xcc9e2d51, 0x1b873593, seed & 0xFFFFFFFF
+
+    def rot(value, bits):
+        return ((value << bits) | (value >> (32 - bits))) & 0xFFFFFFFF
+
+    blocks = length // 4
+    for index in range(blocks):
+        base = index * 4
+        k1 = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24)
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = rot(k1, 15)
+        k1 = (k1 * c2) & 0xFFFFFFFF
+        h1 ^= k1
+        h1 = rot(h1, 13)
+        h1 = (h1 * 5 + 0xE6546B64) & 0xFFFFFFFF
+    tail = length & 3
+    k1 = 0
+    base = blocks * 4
+    if tail >= 3:
+        k1 ^= data[base + 2] << 16
+    if tail >= 2:
+        k1 ^= data[base + 1] << 8
+    if tail >= 1:
+        k1 ^= data[base]
+        k1 = (k1 * c1) & 0xFFFFFFFF
+        k1 = rot(k1, 15)
+        k1 = (k1 * c2) & 0xFFFFFFFF
+        h1 ^= k1
+    h1 ^= length
+    h1 ^= h1 >> 16
+    h1 = (h1 * 0x85EBCA6B) & 0xFFFFFFFF
+    h1 ^= h1 >> 13
+    h1 = (h1 * 0xC2B2AE35) & 0xFFFFFFFF
+    h1 ^= h1 >> 16
+    return h1 - 0x100000000 if h1 > 0x7FFFFFFF else h1
+
+
+def favicon_hash(raw):
+    import base64
+    if not raw:
+        return ""
+    return str(_mmh3_32(base64.encodebytes(bytes(raw))))
+
+
+def platforms_of(page):
+    lower = (page or "").lower()
+    return [name for name, markers in PLATFORMS if any(marker in lower for marker in markers)]
+
+
+def certificates(domain, limit=300, timeout=90):
+    """Domains that received a certificate containing the token - crt.sh, free, no key."""
+    token = urllib.parse.quote(domain)
+    request = urllib.request.Request("https://crt.sh/?q=" + token + "&output=json",
+                                     headers={"User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        rows = json.loads(response.read().decode("utf-8", "replace") or "[]")
+    names = set()
+    for row in rows:
+        for name in str(row.get("name_value") or "").split("\n"):
+            name = name.strip().lower().lstrip("*.")
+            if re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,24}$", name):
+                names.add(name)
+            if len(names) >= int(limit or 300):
+                break
+    return sorted(names)
+
+
+def rdap(domain, timeout=30):
+    """Registration date, registrar, nameservers - if the free RDAP service answers."""
+    request = urllib.request.Request("https://rdap.org/domain/" + urllib.parse.quote(domain),
+                                     headers={"User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    out = {"domain": domain, "registered": "", "expires": "", "registrar": "", "nameservers": []}
+    for event in data.get("events") or []:
+        action = str(event.get("eventAction") or "").lower()
+        when = str(event.get("eventDate") or "")[:10]
+        if action == "registration":
+            out["registered"] = when
+        elif action == "expiration":
+            out["expires"] = when
+    for entity in data.get("entities") or []:
+        if "registrar" in (entity.get("roles") or []):
+            for item in (entity.get("vcardArray") or [None, []])[1] or []:
+                if item and item[0] == "fn":
+                    out["registrar"] = str(item[3])[:120]
+    out["nameservers"] = [str(item.get("ldhName") or "").lower()
+                          for item in (data.get("nameservers") or [])][:6]
+    return out
+
+
+def _connector_key(name):
+    from . import connectors
+    settings = connectors.settings()
+    key = str(settings.get(name + "_key") or "").strip()
+    return key
+
+
+def shodan_favicon(hash_value, limit=50, timeout=30):
+    key = _connector_key("shodan")
+    if not key or not hash_value:
+        return {"ok": False, "error": "No Shodan key."}
+    query = urllib.parse.urlencode({"query": "http.favicon.hash:%s" % hash_value, "limit": limit})
+    request = urllib.request.Request("https://api.shodan.io/shodan/host/search?" + query,
+                                     headers={"User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    hosts = []
+    for match in data.get("matches") or []:
+        hostnames = match.get("hostnames") or []
+        hosts.append({"ip": match.get("ip_str"), "port": match.get("port"),
+                      "hostnames": hostnames[:4], "org": (match.get("org") or "")[:80]})
+    return {"ok": True, "total": data.get("total", len(hosts)), "hosts": hosts[:limit]}
+
+
+def securitytrails_history(domain, timeout=30):
+    key = _connector_key("securitytrails")
+    if not key:
+        return {"ok": False, "error": "No SecurityTrails key."}
+    request = urllib.request.Request(
+        "https://api.securitytrails.com/v1/history/%s/dns/a" % urllib.parse.quote(domain),
+        headers={"APIKEY": key, "User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    records = []
+    for item in (data.get("records") or [])[:40]:
+        records.append({"first_seen": str(item.get("first_seen") or "")[:10],
+                        "last_seen": str(item.get("last_seen") or "")[:10],
+                        "values": [str(v.get("ip") or "") for v in (item.get("values") or [])][:6]})
+    return {"ok": True, "domain": domain, "records": records}
+
+
+def enrich(domain):
+    """RDAP + favicon hash + the shop platform - one call per suspect domain."""
+    answer = profile(domain)
+    page = ""
+    try:
+        page = fetch_page("https://" + domain)
+    except (urllib.error.URLError, OSError, ValueError):
+        pass
+    favicon = ""
+    for path in ("/favicon.ico", "/favicon.png"):
+        try:
+            request = urllib.request.Request("https://" + domain + path, headers={"User-Agent": UA})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                favicon = favicon_hash(response.read(1 << 20))
+            if favicon:
+                break
+        except (urllib.error.URLError, OSError, ValueError):
+            continue
+    platform = platforms_of(page)
+    try:
+        whois = rdap(domain)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        whois = {"error": str(exc)[:120]}
+    db.execute("UPDATE osint_domains SET favicon_hash=?, platforms=?, rdap=? WHERE domain=?",
+               (favicon, ",".join(platform), json.dumps(whois)[:4000], domain))
+    return {"ok": True, "domain": domain, "favicon_hash": favicon, "platforms": platform,
+            "rdap": whois, "title": answer.get("title", ""), "emails": answer.get("emails", "")}
+
+
+def discover(brand, own=(), limit=200):
+    """crt.sh for the brand token -> domains that got a certificate, minus the brand's own."""
+    brand = str(brand or "").strip()
+    if len(_key(brand)) < 3:
+        raise ValueError("Type a brand to search certificates for.")
+    own = [str(domain).strip().lower() for domain in own if str(domain).strip()]
+    token = _key(brand)
+    found = []
+    for name in certificates(brand, limit=limit):
+        if _key(name.split(".")[0]).find(token) < 0:
+            continue
+        if any(name == other or name.endswith("." + other) for other in own):
+            continue
+        found.append({"brand": brand, "domain": name, "source": "crt.sh"})
+    for item in found:
+        db.insert("signals", {"ts": db.now(), "kind": "fake_shop_candidate", "domain": item["domain"],
+                              "company": brand, "title": "%s in a certificate for %s" % (
+                                  item["domain"], brand),
+                              "source": "crt.sh", "payload": json.dumps(item), "lead_id": 0,
+                              "seen": 0})
+    return {"ok": True, "brand": brand, "candidates": found, "count": len(found)}
+
+
+def keys():
+    return {"serper": bool(_connector_key("serper")),
+            "shodan": bool(_connector_key("shodan")),
+            "securitytrails": bool(_connector_key("securitytrails"))}
+
+
 def state():
     """Everything the OSINT tab shows."""
     ensure_tables()
@@ -330,6 +539,8 @@ def state():
             "lookalikes": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='new_lookalike_domain'"),
             "meta_advertisers": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='meta_advertiser'"),
             "profiled": db.scalar("SELECT COUNT(*) FROM osint_domains"),
+            "keys": keys(),
+            "candidates": db.scalar("SELECT COUNT(*) FROM signals WHERE kind='fake_shop_candidate'"),
             "red_points": red_points,
             "scam_jobs": ["brand_watch", "phishing", "scam_radar", "meta_ads"],
             "brand_offer": red_points}

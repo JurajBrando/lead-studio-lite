@@ -708,8 +708,9 @@
       'The Red Points side of the business: which domains are faking the brands you protect, ' +
       'what the watchers found, and what happens next.',
       '<button class="btn" data-act="osint-refresh">Refresh</button>');
-    html += '<div class="grid cols-3" style="margin-bottom:14px">' +
+    html += '<div class="grid cols-4" style="margin-bottom:14px">' +
       kpi('Fake shops', num(o.fake_shops), 'matched against your brands', 'red') +
+      kpi('Candidates', num(o.candidates), 'dorks + certificates', 'accent') +
       kpi('Lookalikes', num(o.lookalikes), 'from the brand watch', 'amber') +
       kpi('Domains profiled', num(o.profiled), 'identified from the site', '') + '</div>';
 
@@ -728,6 +729,26 @@
       '<div class="toolbar mt"><button class="btn primary" data-act="osint-scan">Run the radar</button>' +
       '<span class="small dim">' + num(o.brands) + ' brands saved</span></div>' +
       '<div id="osint-result" class="small dim mt"></div></div>';
+
+    var keys = o.keys || {};
+    html += '<div class="card mt"><div class="card-head"><h2>Dork sweep (Serper)</h2>' +
+      '<div class="spacer"></div>' + (keys.serper ? '<span class="badge green">Serper key set</span>'
+        : '<span class="badge grey">no Serper key</span>') + '</div>' +
+      '<div class="grid cols-2"><div class="field"><label>Brands</label>' +
+      '<textarea id="osint-dork-brands" rows="2" placeholder="Nike' + '\n' + 'Adidas"></textarea></div>' +
+      '<div class="field"><label>Their own domains (dropped from the results)</label>' +
+      '<input id="osint-dork-own" placeholder="nike.com, adidas.com"></div></div>' +
+      '<div class="toolbar mt"><button class="btn primary" data-act="osint-dorks">Run the sweep</button>' +
+      '<span class="small dim">official store · shop now · outlet · site:myshopify.com</span></div>' +
+      '<div id="osint-dorks-result" class="small dim mt"></div></div>';
+
+    html += '<div class="card mt"><div class="card-head"><h2>Certificate discovery (crt.sh)</h2>' +
+      '<div class="spacer"></div><span class="small dim">free, no key</span></div>' +
+      '<div class="field"><label>Brands</label>' +
+      '<textarea id="osint-crt-brands" rows="2" placeholder="Nike"></textarea></div>' +
+      '<div class="toolbar mt"><button class="btn primary" data-act="osint-discover">Find domains in certificates</button>' +
+      '<span class="small dim">finds fakes before any scam feed does</span></div>' +
+      '<div id="osint-crt-result" class="small dim mt"></div></div>';
 
     html += '<div class="card mt"><div class="card-head"><h2>Red Points - brand protection</h2>' +
       '<div class="spacer"></div><span class="small dim">affiliate</span></div>' +
@@ -3064,6 +3085,38 @@
             return '<div class="small mono">' + h(hit.domain) + ' ~ ' + h(hit.brand) + ' <span class="dim">(' + h(hit.why) + ')</span></div>';
           }).join('');
         toast(num(r.hit_count) + ' fake shops found');
+        refresh();
+      });
+    },
+    'osint-dorks': function (el) {
+      var box = $('#osint-dorks-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Running the dorks...';
+      call('/api/osint/dorks', { brands: ($('#osint-dork-brands') || {}).value || '',
+        own: ($('#osint-dork-own') || {}).value || '', per_brand: 5 }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + num(r.candidates.length) + '</b> candidates from <b>' +
+          num(r.brands) + '</b> brands</div>' + r.candidates.slice(0, 30).map(function (row) {
+            return '<div class="small">' + h(row.domain) + ' <span class="dim">~ ' + h(row.brand) +
+              ' (' + h(row.query) + ')</span></div>';
+          }).join('');
+        toast(num(r.candidates.length) + ' fake-shop candidates');
+        refresh();
+      });
+    },
+    'osint-discover': function (el) {
+      var box = $('#osint-crt-result');
+      if (el) el.disabled = true;
+      if (box) box.innerHTML = 'Asking certificate transparency...';
+      call('/api/osint/discover', { brands: ($('#osint-crt-brands') || {}).value || '' }).then(function (r) {
+        if (el) el.disabled = false;
+        if (!r.ok) { if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>'; return; }
+        if (box) box.innerHTML = '<div><b>' + num(r.count) + '</b> domains in certificates</div>' +
+          (r.candidates || []).slice(0, 40).map(function (row) {
+            return '<div class="small">' + h(row.domain) + ' <span class="dim">~ ' + h(row.brand) + '</span></div>';
+          }).join('');
+        toast(num(r.count) + ' certificate candidates');
         refresh();
       });
     },
