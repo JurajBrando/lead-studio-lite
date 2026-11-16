@@ -1,3 +1,26 @@
+## [1.34.0] - 2026-11-16
+
+A 62 million row file imports without a cap and without eating the machine's memory.
+
+### Changed
+
+- **The 500 000 row cap is gone.** The path import accepted a `limit` and then clamped it to
+  500 000, which is why a 62.7M contact DuckDB stopped at "500 000 rows read". The ceiling is now
+  100 000 000, so a Max rows value of 80 000 000 means what it says.
+- **The in-file duplicate set is skipped above two million rows.** It kept every identity key in
+  memory (~80 bytes each, gigabytes at 62M). Above the threshold the unique email index does the
+  work instead, so a rerun of the same file still imports nothing twice; the summary carries
+  `duplicate_check_skipped` so it is visible rather than silent.
+- The Max rows input accepts up to 100 000 000.
+
+### Notes for a 62M run
+
+- Expected time: roughly **2.5–4 hours** at the measured ~6 700 rows/s (the progress bar shows the
+  ETA; the import runs in the background, so the UI stays usable).
+- Database growth: budget **30–50 GB** of free disk in `data/` for the leads table plus indexes.
+- It is resumable in practice: rerunning the same file against the same database imports only the
+  rows that were not stored yet, because the email unique index and `_find_existing` catch them.
+
 ## [1.33.2] - 2026-11-16
 
 ### Changed

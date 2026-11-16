@@ -690,7 +690,7 @@ def r_lead_import_path(p):
         limit = int(p.get("limit") or 20000)
     except (TypeError, ValueError):
         return {"ok": False, "error": "The row limit must be a number."}
-    limit = max(1, min(limit, 500000))
+    limit = max(1, min(limit, 100000000))
     options = {"table": str(p.get("table") or ""), "where": str(p.get("where") or ""),
                "limit": limit, "update_existing": bool(p.get("update_existing")),
                "mark_status": p.get("status") or "new",

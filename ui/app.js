@@ -3642,7 +3642,7 @@
         'or SQLite only)</span></label><input type="text" id="imp-where" ' +
         'placeholder="best_email IS NOT NULL"></div>' +
         '<div class="field"><label>Max rows</label>' +
-        '<input type="number" id="imp-limit" value="5000" min="1" max="500000"></div></div>' +
+        '<input type="number" id="imp-limit" value="5000" min="1" max="100000000"></div></div>' +
         '<label class="check"><input type="checkbox" id="imp-only-email"> ' +
         'Only rows that have an email</label>' +
         '<div class="toolbar" style="margin-top:12px">' +

@@ -658,11 +658,16 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
                "mapped": {k: headers[v] for k, v in mapping.items()},
                "imported": 0, "updated": 0, "duplicates": 0, "invalid": 0,
                "existing_email": 0, "skipped_blank": 0, "no_email": 0,
-               "examined": 0, "stopped_at_limit": False}
+               "examined": 0, "stopped_at_limit": False,
+               "duplicate_check_skipped": False}
     ts = db.now()
     base = {column: "" for column in db.LEAD_FIELD_NAMES}
     suppressed = {r["email"] for r in db.rows("SELECT email FROM suppressions")}
-    seen = set()
+    # A 62M-row file cannot keep every identity key in memory (~80 bytes each would be gigabytes).
+    # Above two million rows the in-file duplicate check is left to the unique email index instead.
+    big = int(total or 0) > 2000000 or int(limit or 0) > 2000000
+    seen = None if big else set()
+    summary["duplicate_check_skipped"] = bool(big)
     pending = []
 
     def flush():
@@ -712,10 +717,11 @@ def import_rows(name, headers, rows, source="import", update_existing=False,
         if not key:
             summary["skipped_blank"] += 1
             continue
-        if key in seen:
+        if seen is not None and key in seen:
             summary["duplicates"] += 1
             continue
-        seen.add(key)
+        if seen is not None:
+            seen.add(key)
 
         existing = _find_existing(email, data)
         if existing:
