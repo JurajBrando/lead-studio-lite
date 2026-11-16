@@ -1,3 +1,10 @@
+## [1.33.2] - 2026-11-16
+
+### Changed
+
+- The **Red Points - brand protection** affiliate card is now the first thing under the OSINT
+  KPIs, above the scam jobs, instead of buried below the radar cards.
+
 ## [1.33.1] - 2026-11-16
 
 Only free sources, as asked.

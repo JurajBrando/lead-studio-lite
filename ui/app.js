@@ -714,6 +714,13 @@
       kpi('Lookalikes', num(o.lookalikes), 'from the brand watch', 'amber') +
       kpi('Domains profiled', num(o.profiled), 'identified from the site', '') + '</div>';
 
+    html += '<div class="card mt" style="margin-bottom:14px">' +
+      '<div class="card-head"><h2>Red Points - brand protection</h2>' +
+      '<div class="spacer"></div><span class="small dim">affiliate</span></div>' +
+      '<div class="small dim">' + h(rp.name || 'Red Points - brand protection') + '</div>' +
+      '<div class="toolbar mt"><a class="btn primary" href="' + h(rp.affiliate_url || 'https://www.redpoints.com/request-demo-affiliate/?referredid=255256383275') + '" target="_blank" rel="noopener sponsored">Open Red Points</a>' +
+      '<span class="small dim">Affiliate link - we may earn a commission.</span></div></div>';
+
     html += '<div class="nav-label" style="padding-left:2px">Scam jobs</div>' +
       '<div class="small dim" style="margin:-4px 0 10px 2px">The watchers run from here; what ' +
       'they find lands in this tab and in the Daily feed.</div>' +
@@ -749,12 +756,6 @@
       '<div class="toolbar mt"><button class="btn primary" data-act="osint-discover">Find domains in certificates</button>' +
       '<span class="small dim">finds fakes before any scam feed does</span></div>' +
       '<div id="osint-crt-result" class="small dim mt"></div></div>';
-
-    html += '<div class="card mt"><div class="card-head"><h2>Red Points - brand protection</h2>' +
-      '<div class="spacer"></div><span class="small dim">affiliate</span></div>' +
-      '<div class="small dim">' + h(rp.name || 'Red Points - brand protection') + '</div>' +
-      '<div class="toolbar mt"><a class="btn primary" href="' + h(rp.affiliate_url || 'https://www.redpoints.com/request-demo-affiliate/?referredid=255256383275') + '" target="_blank" rel="noopener sponsored">Open Red Points</a>' +
-      '<span class="small dim">Affiliate link - we may earn a commission.</span></div></div>';
 
     html += '<div class="card mt"><div class="card-head"><h2>Recent fake shops</h2></div>' +
       ((o.recent_fake_shops || []).length
