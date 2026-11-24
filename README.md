@@ -120,6 +120,7 @@ inbox permissions, or anyone looking for a managed data vendor.
 | Leads | Sequences |
 | --- | --- |
 | ![Leads](docs/screenshots/leads.png) | ![Sequences](docs/screenshots/sequences.png) |
+| ![Unified inbox](docs/screenshots/inbox.png) | ![Mailboxes](docs/screenshots/mailboxes.png) |
 
 ## Download and run
 
