@@ -10,6 +10,10 @@ import time
 from .. import db, net
 
 
+class JobCancelled(Exception):
+    """Raised inside a job when the user asked it to stop."""
+
+
 class Job:
     def __init__(self, key, name, group, description, run, schedule="", params=None,
                  needs_network=True, daily_cap=0):
@@ -50,6 +54,28 @@ class Context:
     def warn(self, message):
         self.stats["warnings"] += 1
         self.log("WARN " + message)
+
+    # ---- progress and cancelling
+    def progress(self, done=None, total=None, phase=None):
+        """Report how far along this job is, for the bar in the Automation tab."""
+        from .. import scheduler                   # late: scheduler imports this module
+        try:
+            scheduler.set_progress(self.job.key, done, total, phase)
+        except Exception:                          # noqa: BLE001 - progress is never fatal
+            pass
+
+    @property
+    def cancelled(self):
+        from .. import scheduler
+        try:
+            return scheduler.is_cancelled(self.job.key)
+        except Exception:                          # noqa: BLE001
+            return False
+
+    def check_cancel(self):
+        """Stop here if the user pressed Cancel. Call it between units of work."""
+        if self.cancelled:
+            raise JobCancelled()
 
     # ---- parameters
     def param(self, name, default=None):

@@ -225,9 +225,12 @@ def _store_batch(pairs, source):
     existing = set()
     for start in range(0, len(names), 400):
         chunk = names[start:start + 400]
+        marks = ",".join("?" * len(chunk))
         existing.update(r["domain"] for r in db.rows(
-            "SELECT domain FROM domains WHERE domain IN (%s)" % ",".join("?" * len(chunk)),
-            tuple(chunk)))
+            "SELECT domain FROM domains WHERE domain IN (%s)" % marks, tuple(chunk)))
+        # Dropped rows stay out too: the cleaner put them in the quarantine on purpose.
+        existing.update(r["domain"] for r in db.rows(
+            "SELECT domain FROM domains_dropped WHERE domain IN (%s)" % marks, tuple(chunk)))
     now = db.now()
     records = []
     seen = set()
@@ -268,6 +271,8 @@ def ensure_domain(domain, source="lead"):
         return ""
     if db.one("SELECT domain FROM domains WHERE domain=?", (value,)):
         return ""
+    if db.one("SELECT domain FROM domains_dropped WHERE domain=?", (value,)):
+        return ""
     now = db.now()
     db.insert("domains", {"domain": value, "tld": value.rsplit(".", 1)[-1], "source": source,
                           "first_seen_ts": now, "updated_ts": now})
@@ -283,8 +288,9 @@ def sync_lead_domains(limit=200000):
     names = [row["domain"] for row in db.rows(
         "SELECT DISTINCT lower(trim(domain)) AS domain FROM leads "
         "WHERE trim(coalesce(domain,''))<>'' AND lower(trim(domain)) NOT IN "
-        "(SELECT domain FROM domains) LIMIT ?", (int(limit),))]
-    names = [name for name in names if name and "." in name]
+        "(SELECT domain FROM domains) AND lower(trim(domain)) NOT IN "
+        "(SELECT domain FROM domains_dropped) LIMIT ?", (int(limit),))]
+    names = [name for name in names if net.domain_of(name)]
     if not names:
         return {"ok": True, "added": 0}
     now = db.now()

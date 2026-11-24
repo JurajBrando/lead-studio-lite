@@ -8,7 +8,6 @@ connections (an API key, an MCP command or a webhook) so the customer can be
 hooked up to the tool after they say yes.
 """
 import json
-import os
 import re
 
 from . import config, db, llm, mail, net
@@ -77,30 +76,6 @@ def import_rows(rows):
     return {"ok": True, "added": added, "skipped": skipped}
 
 
-def pack_path():
-    return os.path.join(config.BUNDLE_DIR, "samples", "offers-pack.json")
-
-
-def load_pack(path=None):
-    import json as _json
-    target = path or pack_path()
-    try:
-        with open(target, encoding="utf-8") as fh:
-            data = _json.load(fh)
-    except (OSError, ValueError):
-        return []
-    if isinstance(data, dict):
-        return data.get("offers") or []
-    return data if isinstance(data, list) else []
-
-
-def import_pack(path=None):
-    rows = load_pack(path)
-    if not rows:
-        return {"ok": False, "error": "No offer pack found next to the app (samples/offers-pack.json)."}
-    return import_rows(rows)
-
-
 # --------------------------------------------------------------------- CRUD
 def _clean_url(value):
     value = (value or "").strip()
@@ -145,6 +120,10 @@ def save(payload):
     if offer_id:
         if not get(offer_id):
             return {"ok": False, "error": "That offer no longer exists."}
+        # Only the keys the caller sent are written: a partial save (a rename, an
+        # active flip) never blanks a column it never mentioned.
+        data = {key: value for key, value in data.items()
+                if key == "updated_ts" or key in payload}
         db.update("offers", offer_id, data)
         return {"ok": True, "id": offer_id}
     data["created_ts"] = db.now()

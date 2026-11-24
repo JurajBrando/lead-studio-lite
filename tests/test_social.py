@@ -451,7 +451,7 @@ class SocialHttpTests(unittest.TestCase):
         config.save_settings(settings)
 
     def get(self, path):
-        req = urllib.request.Request(self.base + path)
+        req = urllib.request.Request(self.base + path, headers={"X-LS-Token": self.token})
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status, resp.read()
 

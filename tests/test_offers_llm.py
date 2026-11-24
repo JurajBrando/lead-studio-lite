@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from engine import config, db, llm, offers  # noqa: E402
+from engine import config, db, llm, offers, upgrades  # noqa: E402
 
 
 def lead(**fields):
@@ -242,27 +242,26 @@ class DisclosureTests(unittest.TestCase):
         self.assertIn("disclosure", cols)
 
 
-class PackTests(unittest.TestCase):
+class ShelfTests(unittest.TestCase):
     def setUp(self):
         db.execute("DELETE FROM offers")
 
-    def test_pack_is_bundled_and_well_formed(self):
-        rows = offers.load_pack()
+    def test_shelf_is_hard_coded_and_well_formed(self):
+        rows = upgrades.items()
         self.assertGreaterEqual(len(rows), 25)
         for row in rows:
             self.assertTrue(row.get("name"), row)
-            self.assertTrue(str(row.get("affiliate_url", "")).startswith("http"), row.get("name"))
+            self.assertTrue(str(row.get("url", "")).startswith("http"), row.get("name"))
             self.assertTrue(row.get("keywords"), row.get("name"))
             self.assertTrue(row.get("category"), row.get("name"))
+        self.assertFalse(hasattr(upgrades, "offers"),
+                         "the Upgrades shelf must not import the offers layer")
 
-    def test_import_is_idempotent(self):
-        rows = offers.load_pack()
-        first = offers.import_pack()
-        self.assertEqual(first["added"], len(rows))
-        second = offers.import_pack()
-        self.assertEqual(second["added"], 0)
-        self.assertEqual(second["skipped"], len(rows))
-        self.assertEqual(db.scalar("SELECT COUNT(*) FROM offers"), len(rows))
+    def test_shelf_survives_an_emptied_database(self):
+        before = upgrades.items()
+        db.execute("DELETE FROM offers")
+        db.execute("DELETE FROM offer_connections")
+        self.assertEqual(len(upgrades.items()), len(before))
 
     def test_two_offers_may_share_one_link(self):
         result = offers.import_rows([

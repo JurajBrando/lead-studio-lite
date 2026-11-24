@@ -19,9 +19,14 @@ import time
 
 from . import config, db, importer
 
+# The two tool folders sit next to this app's own folder (..\LEAD_STUDIO and
+# ..\_CLEAN_2026-11-02). Worked out from where the app is, so no account name or machine
+# path is written into the code; `external.studio` / `external.clean` in settings.json, or
+# the LS_STUDIO_DIR / LS_CLEAN_DIR environment variables, point somewhere else.
+_PARENT = os.path.dirname(config.APP_DIR)
 DEFAULTS = {
-    "studio": r"C:\Users\admin\Desktop\Modulario\LEAD_STUDIO",
-    "clean": r"C:\Users\admin\Desktop\Modulario\_CLEAN_2026-11-02",
+    "studio": os.environ.get("LS_STUDIO_DIR") or os.path.join(_PARENT, "LEAD_STUDIO"),
+    "clean": os.environ.get("LS_CLEAN_DIR") or os.path.join(_PARENT, "_CLEAN_2026-11-02"),
 }
 HANDOFF_RX = re.compile(r"^\s{2}(.+?)\s{2,}([A-Za-z]:\\[^()]+?)\s*"
                         r"(?:\((\d[\d,]*)\s+rows?\))?\s*$")

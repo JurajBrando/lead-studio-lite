@@ -158,6 +158,47 @@ class PathImportTests(unittest.TestCase):
         self.assertEqual(info["kind"], "csv")
         self.assertEqual(info["columns"], ["company", "description"])
 
+    def test_a_csv_over_200_mb_streams_instead_of_being_refused(self):
+        path = os.path.join(self.folder, "huge.csv")
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write("email,company\n"
+                     "one@path-test.com,One\n"
+                     "two@path-test.com,Two\n")
+        # The file proves the path, the patched size stands in for the 18 GB one on disk.
+        with mock.patch.object(importer.os.path, "getsize", return_value=18 * 1024 ** 3):
+            res = importer.import_path(path)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["imported"], 2)
+        self.assertEqual(db.scalar("SELECT count(*) FROM leads"), 2)
+
+    def test_a_csv_is_read_row_by_row_not_into_a_list(self):
+        path = os.path.join(self.folder, "stream.csv")
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write("email;company\n"
+                     'a@stream-test.com;"One, Inc"\n'
+                     "b@stream-test.com;Two\n"
+                     "c@stream-test.com;Three\n")
+        headers, rows = importer.iter_source_rows(path, limit=2, skip=0)
+        self.assertEqual(headers, ["email", "company"])
+        self.assertFalse(hasattr(rows, "__len__"), "a CSV must stream, not load a list")
+        self.assertEqual([r["email"] for r in rows],
+                         ["a@stream-test.com", "b@stream-test.com"])
+
+        headers, rows = importer.iter_source_rows(path, skip=1)
+        self.assertEqual([r["company"] for r in rows], ["Two", "Three"])
+
+    def test_a_cp1250_csv_with_a_multiline_field_streams(self):
+        path = os.path.join(self.folder, "names.csv")
+        with open(path, "w", encoding="cp1250", newline="") as fh:
+            fh.write("email;company;notes\n"
+                     'z@stream-test.com;\u017dlavy;"line one\nline two, with a comma"\n')
+        res = importer.import_path(path)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["imported"], 1)
+        row = db.one("SELECT * FROM leads WHERE email=?", ("z@stream-test.com",))
+        self.assertEqual(row["company"], "\u017dlavy")
+        self.assertIn("line two", row["notes"])
+
     def test_a_filter_cannot_carry_a_second_statement(self):
         with self.assertRaises(ValueError):
             importer._safe_where("1=1; DROP TABLE leads")

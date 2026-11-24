@@ -545,7 +545,9 @@ class HttpTests(unittest.TestCase):
         cls.httpd.server_close()
 
     def get(self, path, headers=None):
-        req = urllib.request.Request(self.base + path, headers=headers or {})
+        # The read endpoints need the session token too, exactly like the page sends it.
+        req = urllib.request.Request(self.base + path,
+                                     headers=headers or {"X-LS-Token": self.token})
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
 

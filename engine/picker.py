@@ -33,6 +33,30 @@ def available():
     return importlib.util.find_spec("tkinter") is not None
 
 
+def choose_many(title="Choose files", extensions=IMPORT_EXTENSIONS):
+    """Show the dialog in multi-select mode and return a list of paths."""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except tk.TclError:
+        pass
+    pattern = " ".join("*." + str(ext).lstrip(".") for ext in extensions) or "*.*"
+    try:
+        chosen = filedialog.askopenfilenames(
+            parent=root, title=title,
+            filetypes=[("Files the importer reads", pattern), ("All files", "*.*")])
+    finally:
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+    return [str(x) for x in (chosen or ())]
+
+
 def choose(title="Choose a file", extensions=IMPORT_EXTENSIONS):
     """Show the dialog and return the chosen path, or "" when cancelled."""
     import tkinter as tk
@@ -57,17 +81,20 @@ def choose(title="Choose a file", extensions=IMPORT_EXTENSIONS):
     return path or ""
 
 
-def _command(out_path, title, extensions):
+def _command(out_path, title, extensions, multi=False):
     """How to start the child dialog: this app, so it works frozen as well."""
     if config.FROZEN:
         base = [sys.executable]
     else:
         base = [sys.executable, os.path.join(config.APP_DIR, "leadstudio.py")]
-    return base + ["--pick-file", "--out", out_path, "--title", title,
-                   "--extensions", ",".join(extensions)]
+    cmd = base + ["--pick-file", "--out", out_path, "--title", title,
+                  "--extensions", ",".join(extensions)]
+    if multi:
+        cmd.append("--multi")
+    return cmd
 
 
-def ask(title="Choose a file", extensions=None, timeout=TIMEOUT):
+def ask(title="Choose a file", extensions=None, timeout=TIMEOUT, multi=False):
     """Open the dialog from a request handler. Returns {ok, path} or {ok, cancelled}."""
     extensions = tuple(extensions or IMPORT_EXTENSIONS)
     if not available():
@@ -79,7 +106,7 @@ def ask(title="Choose a file", extensions=None, timeout=TIMEOUT):
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     try:
-        result = subprocess.run(_command(out_path, title, extensions),
+        result = subprocess.run(_command(out_path, title, extensions, multi),
                                 capture_output=True, text=True, encoding="utf-8",
                                 errors="replace", timeout=timeout, creationflags=flags,
                                 env=env)
@@ -100,7 +127,14 @@ def ask(title="Choose a file", extensions=None, timeout=TIMEOUT):
             pass
     if not chosen:
         return {"ok": True, "cancelled": True}
-    return {"ok": True, "cancelled": False, "path": chosen,
+    if multi:
+        paths = [line.strip() for line in chosen.splitlines() if line.strip()]
+        return {"ok": True, "cancelled": False, "paths": paths,
+                "files": [{"path": x, "name": os.path.basename(x),
+                           "exists": os.path.isfile(x),
+                           "size_mb": round(os.path.getsize(x) / 1048576.0, 1)
+                           if os.path.isfile(x) else 0} for x in paths]}
+    return {"ok": True, "cancelled": False, "path": chosen, "paths": [chosen],
             "name": os.path.basename(chosen), "exists": os.path.isfile(chosen)}
 
 
@@ -109,15 +143,19 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="file to write the chosen path into")
     parser.add_argument("--title", default="Choose a file")
     parser.add_argument("--extensions", default="")
+    parser.add_argument("--multi", action="store_true")
     args = parser.parse_args(argv)
     extensions = tuple(x for x in args.extensions.split(",") if x) or IMPORT_EXTENSIONS
     try:
-        path = choose(args.title, extensions)
+        if args.multi:
+            text = "\n".join(choose_many(args.title, extensions))
+        else:
+            text = choose(args.title, extensions) or ""
     except Exception as exc:                       # noqa: BLE001 - report, never traceback
         print("dialog failed: %s" % exc, file=sys.stderr)
         return 2
     with open(args.out, "w", encoding="utf-8") as handle:
-        handle.write(path or "")
+        handle.write(text)
     return 0
 
 

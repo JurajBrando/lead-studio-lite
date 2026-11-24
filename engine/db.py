@@ -54,6 +54,11 @@ CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_leads_company_blank ON leads(company COLLATE NOCASE) WHERE email = '';
 """
 
+# What the Leads tab's cleaner removes: the whole row, so "Allow them back" returns the
+# person exactly as they were, plus the reason it went.
+LEADS_DROPPED_DDL = "CREATE TABLE IF NOT EXISTS leads_dropped (\n%s,\n    reason TEXT DEFAULT '',\n    dropped_ts INTEGER DEFAULT 0\n);\nCREATE INDEX IF NOT EXISTS idx_leads_dropped_ts ON leads_dropped(dropped_ts);" % (
+    ",\n".join("    %s %s" % (name, ddl) for name, ddl in LEAD_COLUMNS))
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -82,7 +87,7 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     source        TEXT DEFAULT ''
 );
 
-""" + LEADS_DDL + """
+""" + LEADS_DDL + LEADS_DROPPED_DDL + """
 
 CREATE TABLE IF NOT EXISTS lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_sends_msgid ON sends(message_id);
 -- Every tracking pixel and unsubscribe link looks a send up by token, and the dashboard
 -- counts sends by status/date: without these it is a full table scan (including bodies).
 CREATE INDEX IF NOT EXISTS idx_sends_token ON sends(token);
+CREATE INDEX IF NOT EXISTS idx_sends_enrollment ON sends(enrollment_id, step_id);
 CREATE INDEX IF NOT EXISTS idx_sends_status ON sends(status, sent_ts);
 CREATE INDEX IF NOT EXISTS idx_leads_verify ON leads(verify_status);
 
@@ -233,6 +239,15 @@ CREATE TABLE IF NOT EXISTS domains (
     data            TEXT DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_domains_updated ON domains(updated_ts);
+
+-- A dropped row is kept here so an import cannot quietly put it back: a phone number in
+-- the domain column and a name without DNS cost a network query in every pass.
+CREATE TABLE IF NOT EXISTS domains_dropped (
+    domain     TEXT PRIMARY KEY COLLATE NOCASE,
+    reason     TEXT DEFAULT '',
+    source     TEXT DEFAULT '',
+    dropped_ts INTEGER DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS signals (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,6 +330,126 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 );
 """ + LEADS_INDEXES
 
+# Radar (offer cards, hunts, approved companies) and the Army (soldiers that send).
+RADAR_ARMY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS radar_cards (
+    offer_id   INTEGER PRIMARY KEY,
+    card       TEXT DEFAULT '{}',
+    weights    TEXT DEFAULT '{}',
+    updated_ts INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS hunts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_id    INTEGER NOT NULL,
+    ts          INTEGER DEFAULT 0,
+    finished_ts INTEGER DEFAULT 0,
+    status      TEXT DEFAULT 'running',
+    params      TEXT DEFAULT '{}',
+    funnel      TEXT DEFAULT '{}',
+    dropped     TEXT DEFAULT '{}',
+    sources     TEXT DEFAULT '{}',
+    note        TEXT DEFAULT '',
+    rows        TEXT DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_hunts_offer ON hunts(offer_id, id);
+CREATE TABLE IF NOT EXISTS radar_leads (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    offer_id         INTEGER NOT NULL,
+    lead_id          INTEGER DEFAULT 0,
+    hunt_id          INTEGER DEFAULT 0,
+    domain           TEXT DEFAULT '' COLLATE NOCASE,
+    company          TEXT DEFAULT '',
+    email            TEXT DEFAULT '' COLLATE NOCASE,
+    email_source     TEXT DEFAULT '',
+    email_confidence INTEGER DEFAULT 0,
+    score            INTEGER DEFAULT 0,
+    rank             REAL DEFAULT 0,
+    why              TEXT DEFAULT '',
+    angle            TEXT DEFAULT '',
+    profile          TEXT DEFAULT '{}',
+    soldier_id       INTEGER DEFAULT 0,
+    status           TEXT DEFAULT 'approved',
+    approved_ts      INTEGER DEFAULT 0,
+    sent_ts          INTEGER DEFAULT 0,
+    UNIQUE(offer_id, domain)
+);
+CREATE INDEX IF NOT EXISTS idx_radar_leads_work ON radar_leads(offer_id, status, rank);
+CREATE INDEX IF NOT EXISTS idx_radar_leads_lead ON radar_leads(lead_id);
+CREATE TABLE IF NOT EXISTS soldiers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    mailbox_id   INTEGER NOT NULL UNIQUE,
+    offer_id     INTEGER DEFAULT 0,
+    state        TEXT DEFAULT 'training',
+    xp           INTEGER DEFAULT 0,
+    angle        TEXT DEFAULT '',
+    angle_locked INTEGER DEFAULT 0,
+    persona      TEXT DEFAULT '',
+    language     TEXT DEFAULT 'auto',
+    created_ts   INTEGER DEFAULT 0,
+    updated_ts   INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS army_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER DEFAULT 0,
+    soldier_id INTEGER DEFAULT 0,
+    lead_id    INTEGER DEFAULT 0,
+    offer_id   INTEGER DEFAULT 0,
+    kind       TEXT DEFAULT '',
+    angle      TEXT DEFAULT '',
+    send_id    INTEGER DEFAULT 0,
+    xp         INTEGER DEFAULT 0,
+    detail     TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_army_events_soldier ON army_events(soldier_id, ts);
+CREATE INDEX IF NOT EXISTS idx_army_events_lead ON army_events(lead_id);
+CREATE INDEX IF NOT EXISTS idx_army_events_kind ON army_events(kind, ts);
+CREATE TABLE IF NOT EXISTS army_claims (
+    key        TEXT PRIMARY KEY,
+    soldier_id INTEGER DEFAULT 0,
+    ts         INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS army_bandit (
+    offer_id  INTEGER NOT NULL,
+    angle     TEXT NOT NULL,
+    segment   TEXT NOT NULL DEFAULT '',
+    sends     INTEGER DEFAULT 0,
+    replies   INTEGER DEFAULT 0,
+    positives INTEGER DEFAULT 0,
+    ts        INTEGER DEFAULT 0,
+    PRIMARY KEY (offer_id, angle, segment)
+);
+CREATE TABLE IF NOT EXISTS army_drafts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    soldier_id    INTEGER DEFAULT 0,
+    lead_id       INTEGER DEFAULT 0,
+    radar_lead_id INTEGER DEFAULT 0,
+    offer_id      INTEGER DEFAULT 0,
+    kind          TEXT DEFAULT 'send',
+    angle         TEXT DEFAULT '',
+    to_email      TEXT DEFAULT '',
+    subject       TEXT DEFAULT '',
+    body          TEXT DEFAULT '',
+    writer        TEXT DEFAULT '',
+    status        TEXT DEFAULT 'pending',
+    error         TEXT DEFAULT '',
+    created_ts    INTEGER DEFAULT 0,
+    sent_ts       INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_army_drafts_status ON army_drafts(status, soldier_id);
+CREATE TABLE IF NOT EXISTS army_suppress (
+    kind   TEXT NOT NULL,
+    value  TEXT NOT NULL COLLATE NOCASE,
+    reason TEXT DEFAULT '',
+    ts     INTEGER DEFAULT 0,
+    PRIMARY KEY (kind, value)
+);
+"""
+
 _local = threading.local()
 
 
@@ -337,6 +472,7 @@ def conn():
 def init_db():
     c = conn()
     c.executescript(SCHEMA)
+    c.executescript(RADAR_ARMY_SCHEMA)
     _migrate(c)
     _ensure_leads_indexes(c)
     c.commit()
@@ -424,8 +560,14 @@ def _migrate(c):
                   ("company_size", "TEXT DEFAULT ''"),
                   ("technologies", "TEXT DEFAULT ''")],
         "sequences": [("stats_json", "TEXT DEFAULT ''")],
+        "replies": [("class", "TEXT DEFAULT ''"), ("classified_ts", "INTEGER DEFAULT 0"),
+                    ("soldier_id", "INTEGER DEFAULT 0")],
         "mailboxes": [("auth_type", "TEXT DEFAULT 'password'"),
                       ("source", "TEXT DEFAULT ''"),
+                      ("last_test_ts", "INTEGER DEFAULT 0"),
+                      ("last_test_ok", "INTEGER DEFAULT 0"),
+                      ("last_imap_ok", "INTEGER DEFAULT 0"),
+                      ("last_test_detail", "TEXT DEFAULT ''"),
                       ("oauth_provider", "TEXT DEFAULT ''"),
                       ("oauth_refresh", "TEXT DEFAULT ''"),
                       ("oauth_access", "TEXT DEFAULT ''"),
@@ -464,11 +606,50 @@ def scalar(sql, args=(), default=0):
     return r[0]
 
 
-def execute(sql, args=()):
+LOCK_RETRIES = 6          # on top of the 30 s busy timeout of each attempt
+
+
+def _is_locked(exc):
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _write(action):
+    """Run one write and commit it; wait and try again while another writer holds the file.
+
+    A long job (a bulk update, an import) can keep the write lock past the busy timeout. The
+    failed statement is rolled back first, so nothing half-written stays open on this
+    connection - an open transaction here is what would lock everybody else out in turn.
+    """
     c = conn()
-    cur = c.execute(sql, args)
-    c.commit()
-    return cur
+    for attempt in range(LOCK_RETRIES + 1):
+        try:
+            result = action(c)
+            c.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            try:
+                c.rollback()
+            except sqlite3.Error:
+                pass
+            if not _is_locked(exc) or attempt == LOCK_RETRIES:
+                raise
+            time.sleep(min(10, 1 + attempt * 2))
+        except Exception:
+            try:
+                c.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+
+
+def execute(sql, args=()):
+    return _write(lambda c: c.execute(sql, args))
+
+
+def transaction(action):
+    """Run several statements in one commit: a bulk move out of a table has to be one."""
+    return _write(action)
 
 
 def insert(table, data):
@@ -486,9 +667,17 @@ def insert_many(table, rows):
     keys = list(rows[0].keys())
     sql = "INSERT INTO %s (%s) VALUES (%s)" % (
         table, ", ".join(keys), ", ".join("?" for _ in keys))
-    c = conn()
-    c.executemany(sql, [[row.get(k) for k in keys] for row in rows])
-    c.commit()
+    values = [[row.get(k) for k in keys] for row in rows]
+    _write(lambda c: c.executemany(sql, values))
+    return len(rows)
+
+
+def execute_many(sql, rows):
+    """One transaction for many statements of the same shape (an upsert, a delete batch)."""
+    rows = list(rows or [])
+    if not rows:
+        return 0
+    _write(lambda c: c.executemany(sql, rows))
     return len(rows)
 
 
@@ -498,6 +687,37 @@ def update(table, row_id, data):
     keys = list(data.keys())
     sql = "UPDATE %s SET %s WHERE id=?" % (table, ", ".join("%s=?" % k for k in keys))
     execute(sql, [data[k] for k in keys] + [row_id])
+
+
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+SLOW_SECONDS = 0.15        # an answer slower than this is worth remembering
+CACHE_TTL = 120
+
+
+def cached(key, compute, ttl=CACHE_TTL):
+    """`compute()`, remembered for `ttl` seconds - but only when it was slow to work out.
+
+    Counts over a table of a few thousand rows take a millisecond and are always fresh. Over
+    millions of leads the same counts take seconds, and the dashboard asks for them every half
+    minute: those are served from here until they expire or `cache_clear()` is called.
+    """
+    now_ts = time.time()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit and hit[0] > now_ts:
+            return hit[1]
+    started = time.time()
+    value = compute()
+    if time.time() - started >= SLOW_SECONDS:
+        with _CACHE_LOCK:
+            _CACHE[key] = (time.time() + ttl, value)
+    return value
+
+
+def cache_clear():
+    with _CACHE_LOCK:
+        _CACHE.clear()
 
 
 def event(kind, detail=""):

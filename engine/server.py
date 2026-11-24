@@ -1,9 +1,11 @@
 """Local web server: JSON API, the single-page UI, open/click tracking and the worker."""
 import base64
+import hmac
 import html
 import json
 import mimetypes
 import os
+import re
 import socket
 import sys
 import threading
@@ -12,9 +14,11 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import ads, brands, chat, connectors, crawl, daily, demo, dorks, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, tasks, treg, verify, video
+from . import ads, brands, chat, connectors, crawl, daily, demo, dorks, domain_sources, hf_data, hotlist, hyros_air, importer, llm, mail, manyreach_api, match, mcp_client, metricool, net, oauth, offers, osint, osm, pipeline, progress, scheduler, site_read, tasks, treg, upgrades, verify, video
 from . import window
-from . import config, db, picker
+from . import army, hunt, radar, rail
+from . import (artifacts, config, db, dnsniffer, domain_clean, instance, lead_clean, live_list,
+               mailboxes, picker, radar_brief)
 from .jobs import cc as cc_job
 from .jobs.base import Context, Job
 
@@ -40,23 +44,66 @@ PAGE_HEADERS = {
 }
 
 
+# Settings whose name ends like this never leave the server: API keys, OAuth access and
+# refresh tokens, client secrets, passwords. The page only needs to know that one is saved.
+SECRET_NAME_RX = re.compile(r"(key|token|secret|pass|password|pwd)$", re.I)
+
+
+def _is_secret_name(name):
+    name = str(name)
+    return bool(SECRET_NAME_RX.search(name)) and not name.startswith("has_")
+
+
+def _without_secrets(value):
+    """A copy of a settings tree with every secret blanked and a `has_<name>` flag beside it."""
+    if isinstance(value, list):
+        return [_without_secrets(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for name, item in value.items():
+        if _is_secret_name(name) and not isinstance(item, (dict, list)):
+            out[name] = ""
+            out.setdefault("has_" + str(name), bool(str(item or "").strip()))
+        else:
+            out[name] = _without_secrets(item)
+    return out
+
+
+def _keep_blank_secrets(new, old):
+    """A blank secret in a saved form means "keep the stored one", never "erase it".
+
+    The page is never given the stored secrets, so every form sends those fields empty
+    unless the user typed a new value.
+    """
+    if not isinstance(new, dict) or not isinstance(old, dict):
+        return
+    for name, item in new.items():
+        if isinstance(item, dict):
+            _keep_blank_secrets(item, old.get(name))
+        elif _is_secret_name(name) and not str(item or "").strip() and old.get(name):
+            new[name] = old[name]
+
+
 # ------------------------------------------------------------------- routes
 def r_state():
     s = config.load_settings()
-    public = {k: v for k, v in s.items() if k != "session_token"}
+    public = _without_secrets({k: v for k, v in s.items() if k != "session_token"})
     conn = dict(public.get("connectors") or {})
     for secret_key, flag in (("hunter_key", "has_hunter"), ("ai_key", "has_ai"),
-                             ("serper_key", "has_serper")):
-        conn[flag] = bool(str(conn.get(secret_key) or "").strip())
+                             ("serper_key", "has_serper"),
+                             ("dnsniffer_key", "has_dnsniffer")):
+        conn[flag] = bool(str((s.get("connectors") or {}).get(secret_key) or "").strip())
         conn.pop(secret_key, None)
     public["connectors"] = conn
     public["connector_status"] = connectors.status()
     public["osint"] = osint.state()
     oauth_public = dict(public.get("oauth") or {})
     for secret in ("google_client_secret", "microsoft_client_secret"):
-        oauth_public["has_" + secret] = bool(str(oauth_public.get(secret) or "").strip())
+        oauth_public["has_" + secret] = bool(str((s.get("oauth") or {}).get(secret) or "").strip())
         oauth_public.pop(secret, None)
     public["oauth"] = oauth_public
+    sent_map = pipeline.sent_today_map()
     mailboxes = []
     for b in db.rows("SELECT * FROM mailboxes ORDER BY id"):
         mailboxes.append({
@@ -67,37 +114,57 @@ def r_state():
             "imap_host": b["imap_host"], "imap_port": b["imap_port"], "imap_user": b["imap_user"],
             "has_imap_pass": bool(b["imap_pass"]), "daily_limit": b["daily_limit"],
             "signature": b["signature"], "active": b["active"],
-            "sent_today": pipeline.sent_today(b["id"]),
+            "sent_today": sent_map.get(b["id"], 0),
+            "source": b.get("source") or "", "last_test_ts": b.get("last_test_ts") or 0,
+            "last_test_ok": b.get("last_test_ok") or 0, "last_imap_ok": b.get("last_imap_ok") or 0,
+            "last_test_detail": b.get("last_test_detail") or "",
         })
-    seqs = []
+    # Every number below comes from a handful of grouped queries for all sequences at once.
+    # It used to be eleven queries per sequence, on every refresh of the dashboard - with a
+    # hundred imported campaigns that is over a thousand queries each half minute.
     day_ago = int(time.time()) - 86400
+    steps_by_seq = {}
+    for step in db.rows("SELECT * FROM steps ORDER BY sequence_id, step_no"):
+        steps_by_seq.setdefault(step["sequence_id"], []).append(step)
+    enrolled = {r["sequence_id"]: r for r in db.rows(
+        "SELECT sequence_id, COUNT(*) AS total, "
+        "SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running, "
+        "SUM(CASE WHEN status='paused' THEN 1 ELSE 0 END) AS paused "
+        "FROM enrollments GROUP BY sequence_id")}
+    sent = {r["sequence_id"]: r for r in db.rows(
+        "SELECT e.sequence_id, "
+        "SUM(CASE WHEN s.status='sent' THEN 1 ELSE 0 END) AS reached, "
+        "SUM(CASE WHEN s.opened_ts>0 THEN 1 ELSE 0 END) AS opened, "
+        "SUM(CASE WHEN s.clicked_ts>0 THEN 1 ELSE 0 END) AS clicked, "
+        "SUM(CASE WHEN s.status='sent' AND s.sent_ts>=? THEN 1 ELSE 0 END) AS last24, "
+        "COUNT(DISTINCT CASE WHEN s.mailbox_id>0 THEN s.mailbox_id END) AS senders "
+        "FROM sends s JOIN enrollments e ON e.id=s.enrollment_id GROUP BY e.sequence_id",
+        (day_ago,))}
+    replied = {r["sequence_id"]: r["n"] for r in db.rows(
+        "SELECT e.sequence_id, COUNT(DISTINCT r.lead_id) AS n FROM replies r "
+        "JOIN enrollments e ON e.lead_id=r.lead_id WHERE r.is_bounce=0 GROUP BY e.sequence_id")}
+    outcome = {r["sequence_id"]: r for r in db.rows(
+        "SELECT e.sequence_id, "
+        "COUNT(DISTINCT CASE WHEN l.status IN ('interested','won') THEN l.id END) AS interested, "
+        "COUNT(DISTINCT CASE WHEN l.status='won' THEN l.id END) AS won "
+        "FROM enrollments e JOIN leads l ON l.id=e.lead_id "
+        "WHERE l.status IN ('interested','won') GROUP BY e.sequence_id")}
+    seqs = []
     for sq in db.rows("SELECT * FROM sequences ORDER BY COALESCE(created_ts,0) DESC, id DESC"):
-        steps = db.rows("SELECT * FROM steps WHERE sequence_id=? ORDER BY step_no", (sq["id"],))
+        steps = steps_by_seq.get(sq["id"], [])
         mid = sq["id"]
-        metrics = db.one(
-            "SELECT "
-            "(SELECT COUNT(*) FROM enrollments e WHERE e.sequence_id=?) AS prospects,"
-            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-            " WHERE e.sequence_id=? AND s.status='sent') AS reached,"
-            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-            " WHERE e.sequence_id=? AND s.opened_ts>0) AS opened,"
-            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-            " WHERE e.sequence_id=? AND s.clicked_ts>0) AS clicked,"
-            "(SELECT COUNT(DISTINCT r.lead_id) FROM replies r JOIN enrollments e ON e.lead_id=r.lead_id "
-            " WHERE e.sequence_id=? AND r.is_bounce=0) AS replied,"
-            "(SELECT COUNT(DISTINCT l.id) FROM leads l JOIN enrollments e ON e.lead_id=l.id "
-            " WHERE e.sequence_id=? AND l.status IN ('interested','won')) AS interested,"
-            "(SELECT COUNT(DISTINCT l.id) FROM leads l JOIN enrollments e ON e.lead_id=l.id "
-            " WHERE e.sequence_id=? AND l.status='won') AS won,"
-            "(SELECT COUNT(*) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-            " WHERE e.sequence_id=? AND s.status='sent' AND s.sent_ts>=?) AS last24,"
-            "(SELECT COUNT(DISTINCT s.mailbox_id) FROM sends s JOIN enrollments e ON e.id=s.enrollment_id "
-            " WHERE e.sequence_id=? AND s.mailbox_id>0) AS senders",
-            (mid, mid, mid, mid, mid, mid, mid, mid, day_ago, mid))
-        state = db.one(
-            "SELECT SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running, "
-            "SUM(CASE WHEN status='paused' THEN 1 ELSE 0 END) AS paused, "
-            "COUNT(*) AS total FROM enrollments WHERE sequence_id=?", (mid,)) or {}
+        state = enrolled.get(mid) or {}
+        sends_row = sent.get(mid) or {}
+        outcome_row = outcome.get(mid) or {}
+        metrics = {"prospects": int(state.get("total") or 0),
+                   "reached": int(sends_row.get("reached") or 0),
+                   "opened": int(sends_row.get("opened") or 0),
+                   "clicked": int(sends_row.get("clicked") or 0),
+                   "replied": int(replied.get(mid) or 0),
+                   "interested": int(outcome_row.get("interested") or 0),
+                   "won": int(outcome_row.get("won") or 0),
+                   "last24": int(sends_row.get("last24") or 0),
+                   "senders": int(sends_row.get("senders") or 0)}
         if (state.get("running") or 0) > 0:
             status = "running"
         elif (state.get("total") or 0) == 0:
@@ -143,13 +210,7 @@ def r_state():
                 "due": len(scheduler.due_keys()),
                 "running": db.scalar("SELECT COUNT(*) FROM jobs WHERE running=1"),
                 "last_status": (db.one("SELECT status FROM runs ORDER BY id DESC LIMIT 1") or {}).get("status", ""),
-                "signals": db.scalar("SELECT COUNT(*) FROM signals"),
-                "signals_new": db.scalar("SELECT COUNT(*) FROM signals WHERE seen=0"),
-                "domains": db.scalar("SELECT COUNT(*) FROM domains"),
-                "dead_domains": db.scalar("SELECT COUNT(*) FROM domains WHERE mx_status='none'"),
-                "brands": db.scalar("SELECT COUNT(*) FROM brands"),
-                "brand_findings": db.scalar(
-                    "SELECT COUNT(*) FROM signals WHERE kind LIKE 'lookalike%'"),
+                **db.cached("automation_counts", _automation_counts),
                 "offers": db.scalar("SELECT COUNT(*) FROM offers"),
                 "offers_active": db.scalar("SELECT COUNT(*) FROM offers WHERE active=1")},
             "llm": llm.status(),
@@ -159,6 +220,40 @@ def r_state():
             "mcp": mcp_client.status_all(),
             "manyreach": manyreach_api.status(),
             "oauth": oauth.status()}
+
+
+def _automation_counts():
+    """The counts over the big tables (signals, domains) - remembered when they are slow."""
+    return {"signals": db.scalar("SELECT COUNT(*) FROM signals"),
+            "signals_new": db.scalar("SELECT COUNT(*) FROM signals WHERE seen=0"),
+            "domains": db.scalar("SELECT COUNT(*) FROM domains"),
+            "dead_domains": db.scalar("SELECT COUNT(*) FROM domains WHERE mx_status='none'"),
+            "brands": db.scalar("SELECT COUNT(*) FROM brands"),
+            "brand_findings": db.scalar(
+                "SELECT COUNT(*) FROM signals WHERE kind LIKE 'lookalike%'")}
+
+
+def _lead_facets():
+    """The country and source lists for the Leads filters.
+
+    Each is a pass over the whole table, and they do not depend on the filter or the page - so
+    they are worked out once and kept for ten minutes when the table is big, instead of on
+    every page of results. The country pass groups the raw column in SQLite and normalises the
+    handful of groups in Python: calling `norm_country` for every row of 65M took four minutes,
+    where grouping first takes a couple of seconds.
+    """
+    totals = {}
+    for row in db.rows(
+            "SELECT country AS name, COUNT(*) n FROM leads "
+            "WHERE trim(coalesce(country,''))<>'' GROUP BY 1 ORDER BY n DESC LIMIT 2000"):
+        name = net.normalise_country(row["name"])
+        totals[name] = totals.get(name, 0) + int(row["n"])
+    return {
+        "countries": sorted(totals, key=lambda c: totals[c], reverse=True)[:80],
+        "sources": [r["source"] for r in db.rows(
+            "SELECT source, COUNT(*) n FROM leads WHERE trim(source)<>'' "
+            "GROUP BY source ORDER BY n DESC LIMIT 40")],
+    }
 
 
 LEAD_SORTS = {
@@ -239,20 +334,18 @@ def r_leads(q=""):
 
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     order = LEAD_SORTS.get(sort, LEAD_SORTS["newest"])
-    total = db.scalar("SELECT COUNT(*) FROM leads" + clause, tuple(args))
+    if clause:
+        total = db.scalar("SELECT COUNT(*) FROM leads" + clause, tuple(args))
+    else:
+        total = pipeline.lead_counts()["total"]      # shared with the dashboard, cached when slow
     items = db.rows("SELECT * FROM leads" + clause + " ORDER BY " + order +
                     " LIMIT ? OFFSET ?", tuple(args) + (per, (page - 1) * per))
+    facets = db.cached("lead_facets", _lead_facets, ttl=600)
     return {"ok": True, "leads": items, "total": total, "page": page, "per": per,
             "pages": max(1, (total + per - 1) // per),
-            "facets": {
-                "countries": [r["country"] for r in db.rows(
-                    "SELECT norm_country(country) AS country, COUNT(*) n FROM leads "
-                    "WHERE trim(coalesce(country,''))<>'' GROUP BY 1 ORDER BY n DESC LIMIT 80")],
-                "sources": [r["source"] for r in db.rows(
-                    "SELECT source, COUNT(*) n FROM leads WHERE trim(source)<>'' "
-                    "GROUP BY source ORDER BY n DESC LIMIT 40")],
-                "sizes": list(importer.SIZE_BUCKETS),
-            }}
+            "dropped": lead_clean.dropped_count(),
+            "facets": {"countries": facets["countries"], "sources": facets["sources"],
+                       "sizes": list(importer.SIZE_BUCKETS)}}
 
 
 LEAD_FIELDS = ("email", "first_name", "last_name", "company", "title", "domain", "description",
@@ -478,8 +571,14 @@ def r_lead_delete(p):
         db.execute("DELETE FROM signals WHERE lead_id=?", (i,))
         db.execute("DELETE FROM leads WHERE id=?", (i,))
         n += 1
+    db.cache_clear()
     db.event("delete", "%d lead(s) removed" % n)
     return {"ok": True, "deleted": n}
+
+
+def r_lead_restore(p):
+    """Put every quarantined lead back into the list."""
+    return lead_clean.restore()
 
 
 # Changing a lead's status by hand must also stop its sequence. "replied" and "interested"
@@ -516,23 +615,80 @@ def r_lead_status(p):
             db.execute("UPDATE enrollments SET status=?, finished_ts=? "
                        "WHERE lead_id=? AND status='running'",
                        (ENROLLMENT_STOP[status], ts, i))
+    db.cache_clear()
     return {"ok": True, "updated": len(ids)}
+
+
+def _delete_source_files(path):
+    """Remove an imported file and its sidecars. Returns the names removed."""
+    gone = []
+    for ext in ("", "-wal", ".wal", "-shm", "-journal"):
+        target = path + ext
+        try:
+            if os.path.isfile(target):
+                os.remove(target)
+                gone.append(os.path.basename(target))
+        except OSError as exc:
+            config.log("could not delete %s: %s" % (target, exc))
+    return gone
+
+
+def r_lead_file_delete(p):
+    """Delete a source file outright - the button next to a finished import."""
+    path = str(p.get("path") or "")
+    if not path or not os.path.isfile(path):
+        return {"ok": False, "error": "That file is no longer there."}
+    gone = _delete_source_files(path)
+    if not gone:
+        return {"ok": False, "error": "Could not delete it - another program may have it open."}
+    db.event("import_delete", "deleted %s" % ", ".join(gone))
+    return {"ok": True, "deleted": gone}
+
+
+class ImportCancelled(Exception):
+    """Raised between import checkpoints when the user pressed Stop."""
 
 
 def _import_run(label, work):
     """Run an import in a thread and hand back the id the browser polls."""
     run_id = progress.start(label)
 
+    last = {"text": "", "at": 0.0}
+
     def reporter(done, total, phase, rows=0):
         progress.update(run_id, done, total, phase, rows)
+        if progress.is_cancelled(run_id):
+            raise ImportCancelled()
+        snap = progress.snapshot(run_id)
+        if not snap.get("ok"):
+            return
+        text = "read %s  imported %s" % (format(snap.get("read_rows") or 0, ","),
+                                         format(snap.get("imported_rows") or 0, ","))
+        if snap.get("percent"):
+            text += "  %d%%" % snap["percent"]
+        line = "%s - %s" % (phase or snap.get("phase") or "working", text)
+        now = time.time()
+        # one line every 2s, and never the same line twice
+        if line != last["text"] and now - last["at"] > 2.0:
+            last["text"], last["at"] = line, now
+            progress.log(run_id, line)
 
     def worker():
         try:
             result = work(reporter)
+        except ImportCancelled:
+            # Rows already committed stay; the next import resumes from the file again.
+            db.cache_clear()
+            progress.finish(run_id, result={"ok": True, "cancelled": True,
+                                            "note": "stopped on request"},
+                            cancelled=True)
+            return
         except Exception as exc:                   # noqa: BLE001 - reported to the UI
             config.log("import failed: %s\n%s" % (exc, traceback.format_exc()))
+            db.cache_clear()
             progress.finish(run_id, error=str(exc))
             return
+        db.cache_clear()
         try:
             if result.get("ok"):
                 result["lead_domains"] = domain_sources.sync_lead_domains().get("added", 0)
@@ -694,7 +850,8 @@ def r_lead_import(p):
         return {"ok": False, "error": "No file received."}
     options = {"update_existing": bool(p.get("update_existing")),
                "mark_status": p.get("status") or "new",
-               "only_email": bool(p.get("only_email"))}
+               "only_email": bool(p.get("only_email")),
+               "business_only": bool(p.get("business_only"))}
     run_id = _import_run(name, lambda report: importer.import_data(name, raw, source="import",
                                                                   report=report, **options))
     return {"ok": True, "async": True, "import_id": run_id, "name": name}
@@ -704,7 +861,8 @@ def r_pick_file(p):
     """Open a native file dialog on this computer and return the path it chose."""
     try:
         return picker.ask(str(p.get("title") or "Choose a file to import"),
-                          [str(x) for x in (p.get("extensions") or [])])
+                          [str(x) for x in (p.get("extensions") or [])],
+                          multi=bool(p.get("multi")))
     except picker.PickerError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -712,6 +870,18 @@ def r_pick_file(p):
 def r_lead_inspect(p):
     """What a file on this computer contains: tables, columns, rows."""
     return importer.inspect_source(p.get("path") or "", str(p.get("table") or ""))
+
+
+def r_lead_import_state(p):
+    """Where a previous run of this file stopped, so the UI can offer Resume."""
+    state = importer.import_state(p.get("path") or "", str(p.get("table") or ""),
+                                  str(p.get("where") or ""))
+    if not state:
+        return {"ok": True, "found": False, "offset_rows": 0, "finished": False}
+    return {"ok": True, "found": True,
+            "offset_rows": int(state.get("offset_rows") or 0),
+            "finished": bool(int(state.get("finished") or 0)),
+            "updated_ts": state.get("updated_ts") or state.get("ts") or ""}
 
 
 def r_lead_import_path(p):
@@ -725,11 +895,27 @@ def r_lead_import_path(p):
                "limit": limit, "update_existing": bool(p.get("update_existing")),
                "mark_status": p.get("status") or "new",
                "only_email": bool(p.get("only_email")),
+               "business_only": bool(p.get("business_only")),
                "restart": bool(p.get("restart"))}
-    name = os.path.basename(str(p.get("path") or "")) or "file"
-    run_id = _import_run(name, lambda report: importer.import_path(
-        p.get("path") or "", report=report, **options))
-    return {"ok": True, "async": True, "import_id": run_id, "name": name}
+    src_path = str(p.get("path") or "")
+    name = os.path.basename(src_path) or "file"
+    delete_after = bool(p.get("delete_after"))
+
+    def work(report):
+        result = importer.import_path(src_path, report=report, **options)
+        if delete_after and result.get("ok") and not result.get("error"):
+            gone = _delete_source_files(src_path)
+            result["deleted"] = gone
+            if gone:
+                db.event("import_delete", "deleted %s after import" % ", ".join(gone))
+        elif delete_after:
+            result["deleted"] = []
+            result["delete_skipped"] = "the import did not finish cleanly"
+        return result
+
+    run_id = _import_run(name, work)
+    return {"ok": True, "async": True, "import_id": run_id, "name": name,
+            "delete_after": delete_after}
 
 
 def r_lead_verify(p):
@@ -865,6 +1051,12 @@ def r_box_save(p):
     for field, key in (("smtp_pass", "smtp_pass"), ("imap_pass", "imap_pass")):
         if p.get(key):
             data[field] = p[key]
+    # Seznam, and most providers, sign SMTP and IMAP with the same password: typing it
+    # once must be enough, otherwise IMAP silently failed with "Empty password".
+    if data.get("smtp_pass") and not data.get("imap_pass"):
+        data["imap_pass"] = data["smtp_pass"]
+    elif data.get("imap_pass") and not data.get("smtp_pass"):
+        data["smtp_pass"] = data["imap_pass"]
     if p.get("id"):
         db.update("mailboxes", p["id"], data)
         return {"ok": True, "id": p["id"]}
@@ -883,37 +1075,58 @@ def r_box_test(p):
     box = db.one("SELECT * FROM mailboxes WHERE id=?", (p.get("id"),))
     if not box:
         return {"ok": False, "error": "Save the mailbox first, then test it."}
-    out = {"ok": False, "smtp": "not tested", "imap": "not set", "smtp_detail": "", "imap_detail": ""}
-    conn, err = mail.smtp_open(box)
-    if conn:
-        out["smtp"] = "ok"
-        try:
-            conn.quit()
-        except Exception:
-            pass
-    else:
-        out["smtp"] = "failed"
-        out["smtp_detail"] = err
-    if (box.get("imap_host") or "").strip():
-        m, ierr = mail.imap_open(box)
-        if m:
-            out["imap"] = "ok"
-            try:
-                m.select("INBOX", readonly=True)
-                typ, data = m.search(None, "UNSEEN")
-                out["unread"] = len((data[0] or b"").split())
-                m.logout()
-            except Exception as e:
-                out["imap_detail"] = str(e)
-        else:
-            out["imap"] = "failed"
-            out["imap_detail"] = ierr
-    out["ok"] = out["smtp"] == "ok"
+    out = mail.probe_box(box)
+    mailboxes.store_probe(box["id"], out)
     return out
+
+
+def r_box_import(p):
+    """Fill mailboxes from a provider senders sheet: address, password, hosts."""
+    path = str(p.get("path") or "").strip()
+    if not path:
+        return {"ok": False, "error": "Choose the senders CSV first."}
+    activate = str(p.get("activate") or "yes").strip().lower()
+    if activate not in ("yes", "all", "keep"):
+        activate = "yes"
+    fill_suffix = str(p.get("fill_suffix") or "").strip().lower()
+    if fill_suffix:
+        fill_suffix = "." + fill_suffix.lstrip("*.")
+        if len(fill_suffix) > 12:
+            fill_suffix = ""
+    return mailboxes.import_senders_csv(path, activate=activate, fill_suffix=fill_suffix)
+
+
+def r_box_dns_check(p):
+    """SPF, DKIM and DMARC for the sender domains, with the provider's own CSV."""
+    domains = p.get("domains") or []
+    if isinstance(domains, str):
+        domains = [d for d in domains.replace("\n", ",").split(",")]
+    domains = [str(d).strip().lower() for d in domains if str(d).strip()]
+    path = str(p.get("path") or "").strip()
+    if path:
+        try:
+            domains = mailboxes.domains_from_dns_csv(path) or domains
+        except Exception as exc:                    # noqa: BLE001
+            return {"ok": False, "error": "Could not read the DNS CSV: %s" % exc}
+    if not domains:
+        domains = sorted({(b["from_email"] or "").rsplit("@", 1)[-1]
+                          for b in db.rows("SELECT from_email FROM mailboxes "
+                                           "WHERE length(trim(smtp_pass)) > 0")
+                          if "@" in (b["from_email"] or "")})
+    if not domains:
+        return {"ok": False, "error": "No domains to check - import the senders first."}
+    rows = mailboxes.check_dns(domains[:500])
+    return {"ok": True, "domains": rows, "checked": len(rows),
+            "passing": sum(1 for r in rows if r["ok"]),
+            "failing": [r["domain"] for r in rows if not r["ok"]]}
 
 
 def r_inbox_sync(p):
     res = pipeline.sync_inbox(int(p.get("mailbox_id") or 0), days=int(p.get("days") or 14))
+    try:
+        res["sorted"] = army.sort_replies()
+    except Exception as e:
+        config.log("reply sorting failed: %s" % e)
     with WORKER_LOCK:
         WORKER["last_sync"] = int(time.time())
         WORKER["last_sync_result"] = res
@@ -927,6 +1140,10 @@ def r_inbox(q):
     if mailbox:
         where = " WHERE r.mailbox_id=?"
         args.append(mailbox)
+    cls = (q.get("class") or "").strip()
+    if cls:
+        where += (" AND " if where else " WHERE ") + "COALESCE(r.class,'')=?"
+        args.append("" if cls == "unsorted" else cls)
     rows = db.rows(
         "SELECT r.*, l.company, l.status AS lead_status, m.name AS mailbox_name, "
         "m.from_email AS mailbox_email FROM replies r "
@@ -940,8 +1157,10 @@ def r_inbox(q):
         "FROM mailboxes m LEFT JOIN replies r ON r.mailbox_id=m.id "
         "GROUP BY m.id ORDER BY (unread > 0) DESC, m.name")
     orphans = db.scalar("SELECT COUNT(*) FROM replies WHERE mailbox_id=0")
+    classes = {r["c"]: r["n"] for r in db.rows(
+        "SELECT COALESCE(NULLIF(class,''),'unsorted') AS c, COUNT(*) AS n FROM replies GROUP BY c")}
     return {"ok": True, "replies": rows, "mailboxes": boxes, "orphans": orphans,
-            "unread": db.scalar("SELECT COUNT(*) FROM replies WHERE seen=0")}
+            "unread": db.scalar("SELECT COUNT(*) FROM replies WHERE seen=0"), "classes": classes}
 
 
 def r_inbox_seen(p):
@@ -957,6 +1176,13 @@ def r_wipe(p):
     for table in ("sends", "replies", "enrollments", "steps", "sequences", "list_members",
                   "lists", "leads", "suppressions", "events"):
         db.execute("DELETE FROM %s" % table)
+    # The resume bookmarks describe leads that are gone now: with them left behind, importing
+    # the same file again would continue from the saved row and skip everything before it.
+    try:
+        db.execute("DELETE FROM import_state")
+    except Exception:                              # noqa: BLE001 - the table may not exist yet
+        pass
+    db.cache_clear()
     db.event("wipe", "all working data deleted")
     return {"ok": True}
 
@@ -976,7 +1202,7 @@ def r_settings_save(p):
     conn = s.get("connectors") or {}
     old_conn = old.get("connectors") or {}
     if isinstance(conn, dict):
-        for key in ("hunter_key", "ai_key", "serper_key"):
+        for key in ("hunter_key", "ai_key", "serper_key", "dnsniffer_key"):
             if key in conn and not str(conn.get(key) or "").strip():
                 conn[key] = old_conn.get(key, "")
         s["connectors"] = conn
@@ -1009,6 +1235,7 @@ def r_settings_save(p):
         sending.update({"window_start": start, "window_end": end,
                         "gap_seconds": gap, "jitter_seconds": jitter})
         s["sending"] = sending
+    _keep_blank_secrets(s, old)
     config.save_settings(s)
     net.set_contact(s.get("contact_email"))
     return {"ok": True}
@@ -1063,6 +1290,125 @@ def r_job_update(p):
 def r_job_runs(q):
     limit = min(100, int(q.get("limit") or 30))
     return {"ok": True, "runs": scheduler.run_logs(q.get("key") or None, limit=limit)}
+
+
+def r_job_results(q):
+    """What the last run of a job produced - the files, with row counts, not the log."""
+    key = (q.get("key") or "").strip()
+    runs = scheduler.run_logs(key or None, limit=1)
+    if not runs:
+        return {"ok": True, "files": [], "summary": {}, "note": "This job has not run yet."}
+    run = runs[0]
+    try:
+        summary = json.loads(run.get("summary") or "{}")
+    except ValueError:
+        summary = {}
+    files = [artifacts.describe(p) for p in artifacts.files_from_summary(summary)]
+    return {"ok": True, "key": key, "status": run.get("status"),
+            "started_ts": run.get("started_ts"), "finished_ts": run.get("finished_ts"),
+            "summary": summary if isinstance(summary, dict) else {},
+            "files": files, "log": run.get("log") or ""}
+
+
+def r_job_preview(q):
+    """The first rows of one result file, so a result can be opened instead of described."""
+    return artifacts.preview(q.get("path") or "", limit=int(q.get("limit") or 50),
+                             table=str(q.get("table") or ""))
+
+
+def r_job_run(p):
+    """Start a job. With async the request returns at once and Results shows it running."""
+    key = (p.get("key") or "").strip()
+    params = p.get("params") or None
+    if key in ("linkedin_download", "linkedin_to_leads"):
+        return {"ok": False, "error": "LinkedIn data comes with the leads.cm subscription.",
+                "offer_url": config.LINKEDIN_OFFER_URL}
+    if not p.get("async"):
+        return scheduler.run_job(key, trigger="manual", params=params)
+    job = scheduler.registry.by_key(key)
+    if not job:
+        return {"ok": False, "error": "Unknown job: %s" % key}
+    row = db.one("SELECT running FROM jobs WHERE key=?", (key,))
+    if row and int(row.get("running") or 0):
+        return {"ok": False, "error": "That job is already running."}
+
+    def worker():
+        try:
+            scheduler.run_job(key, trigger="manual", params=params)
+        except Exception as exc:                     # noqa: BLE001 - logged, never raised here
+            config.log("async job %s failed: %s" % (key, exc))
+
+    threading.Thread(target=worker, name="job-" + key, daemon=True).start()
+    return {"ok": True, "started": True, "key": key, "name": job.name}
+
+
+def r_job_cancel(p):
+    """Stop running work: a scheduled job, a Radar hunt, a file import or a child task."""
+    kind = (p.get("kind") or "job").strip().lower()
+    key = str(p.get("key") or "").strip()
+    if kind == "hunt":
+        if hunt.RUN.get("running"):
+            hunt.stop()
+            db.event("job", "radar hunt cancel requested")
+            return {"ok": True, "key": key,
+                    "note": "Stopping the hunt at its next checkpoint."}
+        return {"ok": False, "error": "No Radar hunt is running."}
+    if kind == "import":
+        if progress.request_cancel(key):
+            db.event("job", "import %s cancel requested" % key)
+            return {"ok": True, "key": key,
+                    "note": "Stopping the import - rows already written are kept."}
+        return {"ok": False, "error": "That import is no longer running."}
+    if kind == "task":
+        if tasks.cancel(key):
+            db.event("job", "task %s cancelled" % key)
+            return {"ok": True, "key": key, "note": "Task stopped."}
+        return {"ok": False, "error": "That task is not running."}
+    if scheduler.request_cancel(key):
+        db.event("job", "%s cancel requested" % key)
+        return {"ok": True, "key": key,
+                "note": "Stopping at the next checkpoint - this can take a moment."}
+    return {"ok": False, "error": "That job is not running."}
+
+
+def r_linkedin_status(q):
+    """The leads.cm LinkedIn table is a paid subscription: the panel only offers the link."""
+    return {"ok": True, "unlocked": False, "offer_url": config.LINKEDIN_OFFER_URL, "exists": False,
+            "contacts": 0, "files_done": 0, "files_total": 0, "db_gb": 0, "free_gb": 0}
+
+
+def r_linkedin_search(q):
+    """Pulling from the LinkedIn table needs the paid leads.cm subscription."""
+    return {"ok": False, "error": "LinkedIn data comes with the leads.cm subscription.",
+            "offer_url": config.LINKEDIN_OFFER_URL}
+
+
+def r_jobs_live(q=None):
+    return {"ok": True, "running": scheduler.live()}
+
+
+def r_job_results_recent(q):
+    """The last runs across every job, each with what it produced - the Results tab."""
+    limit = min(50, int(q.get("limit") or 20))
+    out = []
+    running = scheduler.live()
+    for run in scheduler.run_logs(None, limit=limit):
+        try:
+            summary = json.loads(run.get("summary") or "{}")
+        except ValueError:
+            summary = {}
+        files = [artifacts.describe(p) for p in artifacts.files_from_summary(summary)]
+        counts = {}
+        if isinstance(summary, dict):
+            for k, v in summary.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v:
+                    counts[k] = v
+        out.append({"id": run.get("id"), "key": run.get("job_key"),
+                    "status": run.get("status"), "started_ts": run.get("started_ts"),
+                    "finished_ts": run.get("finished_ts"), "counts": counts,
+                    "files": files,
+                    "error": (summary or {}).get("error") if isinstance(summary, dict) else ""})
+    return {"ok": True, "runs": out, "running": running}
 
 
 def r_signals(q):
@@ -1147,6 +1493,9 @@ def _domain_stats():
         "with_mx": db.scalar("SELECT COUNT(*) FROM domains WHERE mx_status='ok'"),
         "new_week": db.scalar("SELECT COUNT(*) FROM domains WHERE first_seen_ts>?", (week_ago,)),
         "leads": db.scalar("SELECT COUNT(DISTINCT domain) FROM leads WHERE domain<>''"),
+        "dropped": domain_clean.dropped_count(),
+        "dnsniffer": dnsniffer.status(),
+        "live_list": live_list.status(),
     }
 
 
@@ -1183,6 +1532,11 @@ def r_domain_list(q):
 def r_domain_sync(p):
     """Copy every lead's domain into the catalogue - including leads that only have one."""
     return domain_sources.sync_lead_domains()
+
+
+def r_domain_restore(p):
+    """Forget the quarantine, so imports may bring those domains back into the catalogue."""
+    return domain_clean.restore()
 
 
 def r_domain_pull(p):
@@ -1372,6 +1726,16 @@ def r_offers(q=None):
                        "with_link": sum(1 for r in rows if r.get("affiliate_url"))}}
 
 
+def r_upgrades(q=None):
+    """The read-only affiliate shelf, hard-coded in engine/upgrades.py.
+
+    It never touches the offers table or any file on disk, so deleting the
+    database, the data folder or the app's sample files cannot empty it.
+    """
+    items = upgrades.items()
+    return {"ok": True, "upgrades": items, "count": len(items)}
+
+
 def r_offer_save(p):
     return offers.save(p)
 
@@ -1392,9 +1756,12 @@ def r_offer_matches(q):
                                       min_score=int(q.get("min_score") or 2))}
 
 
+def r_offer_read(p):
+    """Fill the offer form from a website - plain rules, no LLM."""
+    return site_read.read_site(p.get("url"))
+
+
 def r_offer_import(p):
-    if p.get("pack"):
-        return offers.import_pack()
     rows = p.get("offers")
     if rows is None and p.get("text"):
         try:
@@ -1669,7 +2036,155 @@ def r_metricool_analytics(p):
         return {"ok": False, "error": str(exc)}
 
 
+
+# ---------------------------------------------------------------- radar & army
+def _ids(value):
+    if isinstance(value, (list, tuple)):
+        return [int(v) for v in value if str(v).strip().lstrip("-").isdigit()]
+    return [int(v) for v in str(value or "").split(",") if v.strip().isdigit()]
+
+
+def r_radar_state(q):
+    return hunt.state(int(q.get("offer_id") or 0))
+
+
+def r_radar_live(q):
+    return hunt.live(int(q.get("offer_id") or 0), limit=min(200, int(q.get("limit") or 60)))
+
+
+def r_radar_territory(q):
+    return hunt.territory(int(q.get("offer_id") or 0), q.get("status") or "", min(500, int(q.get("limit") or 200)))
+
+
+def r_radar_parse(p):
+    text = (p.get("text") or "").strip()
+    if len(text) < 20:
+        return {"ok": False, "error": "Paste the offer first - a paragraph is enough."}
+    return {"ok": True, "card": radar.normalise_card(radar.parse_offer(text))}
+
+
+def r_radar_offer(p):
+    return hunt.offer_from_text(p.get("text"), name=(p.get("name") or "").strip(),
+                                affiliate_url=p.get("affiliate_url") or "", category=p.get("category") or "")
+
+
+def r_radar_card(p):
+    return hunt.save_card(int(p.get("offer_id") or 0), p.get("card"), p.get("weights"))
+
+
+def r_radar_assistant(p):
+    """One link -> the offer card, the team, the rivals, the pains, ideas and briefs."""
+    return radar_brief.build(p.get("url"), int(p.get("offer_id") or 0))
+
+
+def r_radar_hunt(p):
+    return hunt.start(int(p.get("offer_id") or 0), p.get("pull"), p.get("keep"))
+
+
+def r_radar_stop(p=None):
+    return hunt.stop()
+
+
+def r_radar_approve(p):
+    return hunt.approve(int(p.get("hunt_id") or 0), domains=p.get("domains") or [], top=int(p.get("top") or 0),
+                        soldier_id=int(p.get("soldier_id") or 0), allow_low=bool(p.get("allow_low")))
+
+
+def r_radar_skip(p):
+    return hunt.skip(int(p.get("hunt_id") or 0), p.get("domain") or "", never=bool(p.get("never")),
+                     undo=bool(p.get("undo")))
+
+
+def r_army_state(q=None):
+    return army.state()
+
+
+def r_army_drafts(q):
+    return {"ok": True, "drafts": army.drafts(q.get("status") or "pending", min(300, int(q.get("limit") or 100)))}
+
+
+def r_army_settings(p):
+    return army.save_settings(p)
+
+
+def r_army_openrouter(p):
+    return army.connect_openrouter(p.get("api_key"), p.get("model") or "", make_writer=p.get("writer", True) is not False)
+
+
+def r_army_soldier_save(p):
+    return army.save_soldier(p)
+
+
+def r_army_soldier_delete(p):
+    return army.delete_soldier(int(p.get("id") or 0))
+
+
+def r_army_soldier_state(p):
+    return army.set_state(int(p.get("id") or 0), p.get("state") or "", everyone=bool(p.get("everyone")))
+
+
+def r_army_deploy(p):
+    return army.deploy(_ids(p.get("offer_ids")), mode=p.get("mode") or "spread", reassign=bool(p.get("reassign")))
+
+
+def r_army_turn(p):
+    send = p.get("send")
+    return army.turn(int(p.get("id") or 0), force=bool(p.get("force")),
+                     send_direct=None if send is None else bool(send))
+
+
+def r_army_turn_all(p):
+    out = {"ok": True, "results": []}
+    for row in db.rows("SELECT id FROM soldiers WHERE state IN ('training','active') AND offer_id>0 ORDER BY id"):
+        out["results"].append(army.turn(row["id"]))
+    out["drafted"] = sum(1 for r in out["results"] if r.get("drafted"))
+    out["sent"] = sum(1 for r in out["results"] if r.get("ok") and not r.get("drafted"))
+    return out
+
+
+def r_army_tick(p=None):
+    return army.tick(force=True)
+
+
+def r_army_draft_update(p):
+    return army.update_draft(int(p.get("id") or 0), p.get("subject"), p.get("body"))
+
+
+def r_army_draft_approve(p):
+    return army.approve_drafts(_ids(p.get("ids")), all_pending=bool(p.get("all")), send_now=bool(p.get("send_now")))
+
+
+def r_army_draft_send(p):
+    return army.send_draft(int(p.get("id") or 0))
+
+
+def r_army_draft_reject(p):
+    return army.reject_draft(int(p.get("id") or 0), never=bool(p.get("never")))
+
+
+def r_army_draft_rewrite(p):
+    return army.rewrite_draft(int(p.get("id") or 0), p.get("angle") or "")
+
+
+def r_army_replies_sort(p=None):
+    return army.sort_replies(limit=int((p or {}).get("limit") or 100))
+
+
+def r_army_reply_class(p):
+    return army.set_reply_class(int(p.get("id") or 0), p.get("class") or "")
+
+
+def r_army_suppress(p):
+    return army.suppress(p.get("kind") or "domain", p.get("value") or "", p.get("reason") or "blocked by hand")
+
+
 ROUTES_GET = {
+    "/api/radar/state": r_radar_state,
+    "/api/radar/live": r_radar_live,
+    "/api/radar/territory": r_radar_territory,
+    "/api/army/state": r_army_state,
+    "/api/army/drafts": r_army_drafts,
+    "/api/rail": lambda q: rail.get(),
     "/api/state": lambda q: r_state(),
     "/api/leads": r_leads,
     "/api/enrollments": r_enrollments,
@@ -1678,10 +2193,15 @@ ROUTES_GET = {
     "/api/diagnose": lambda q: r_diagnose(),
     "/api/jobs": r_jobs,
     "/api/jobs/runs": r_job_runs,
+    "/api/job/results": r_job_results,
+    "/api/job/results/recent": r_job_results_recent,
+    "/api/job/preview": r_job_preview,
     "/api/signals": r_signals,
     "/api/domains": r_domains,
     "/api/domain/list": r_domain_list,
     "/api/mcp/status": r_mcp_status,
+    "/api/linkedin/status": r_linkedin_status,
+    "/api/linkedin/search": r_linkedin_search,
     "/api/mcp/items": r_mcp_items,
     "/api/manyreach/status": r_manyreach_status,
     "/api/ads": r_ads,
@@ -1689,6 +2209,7 @@ ROUTES_GET = {
     "/api/brands": r_brands,
     "/api/brand/cases": r_brand_cases,
     "/api/offers": r_offers,
+    "/api/upgrades": r_upgrades,
     "/api/offer/matches": r_offer_matches,
     "/api/offer/connections": r_offer_connections,
     "/api/llm/providers": r_llm_providers,
@@ -1701,16 +2222,45 @@ ROUTES_GET = {
 }
 
 ROUTES_POST = {
+    "/api/radar/parse": r_radar_parse,
+    "/api/radar/offer": r_radar_offer,
+    "/api/radar/card": r_radar_card,
+    "/api/radar/assistant": r_radar_assistant,
+    "/api/radar/hunt": r_radar_hunt,
+    "/api/radar/stop": r_radar_stop,
+    "/api/radar/approve": r_radar_approve,
+    "/api/radar/skip": r_radar_skip,
+    "/api/army/settings": r_army_settings,
+    "/api/army/openrouter": r_army_openrouter,
+    "/api/army/soldier/save": r_army_soldier_save,
+    "/api/army/soldier/delete": r_army_soldier_delete,
+    "/api/army/soldier/state": r_army_soldier_state,
+    "/api/army/deploy": r_army_deploy,
+    "/api/army/turn": r_army_turn,
+    "/api/army/turn_all": r_army_turn_all,
+    "/api/army/tick": r_army_tick,
+    "/api/army/draft/update": r_army_draft_update,
+    "/api/army/draft/approve": r_army_draft_approve,
+    "/api/army/draft/send": r_army_draft_send,
+    "/api/army/draft/reject": r_army_draft_reject,
+    "/api/army/draft/rewrite": r_army_draft_rewrite,
+    "/api/army/replies/sort": r_army_replies_sort,
+    "/api/army/reply/class": r_army_reply_class,
+    "/api/army/suppress": r_army_suppress,
     "/api/lead/save": r_lead_save,
     "/api/lead/delete": r_lead_delete,
+    "/api/lead/restore": r_lead_restore,
     "/api/lead/status": r_lead_status,
     "/api/lead/import": r_lead_import,
     "/api/lead/import/path": r_lead_import_path,
+    "/api/lead/file/delete": r_lead_file_delete,
+    "/api/lead/import/state": r_lead_import_state,
     "/api/import/progress": r_import_progress,
     "/api/lead/inspect": r_lead_inspect,
     "/api/dialog/pick": r_pick_file,
     "/api/domain/pull": r_domain_pull,
     "/api/domain/sync": r_domain_sync,
+    "/api/domain/restore": r_domain_restore,
     "/api/domain/enrich": r_domain_enrich,
     "/api/domain/scrape": r_domain_scrape,
     "/api/mcp/start": r_mcp_start,
@@ -1741,13 +2291,17 @@ ROUTES_POST = {
     "/api/mailbox/save": r_box_save,
     "/api/mailbox/delete": r_box_delete,
     "/api/mailbox/test": r_box_test,
+    "/api/mailbox/import": r_box_import,
+    "/api/mailbox/dns": r_box_dns_check,
     "/api/inbox/sync": r_inbox_sync,
     "/api/inbox/seen": r_inbox_seen,
     "/api/settings/save": r_settings_save,
     "/api/wipe": r_wipe,
     "/api/demo/seed": lambda p: demo.seed(),
     "/api/demo/remove": lambda p: demo.remove(),
-    "/api/jobs/run": lambda p: scheduler.run_job(p.get("key"), trigger="manual"),
+    "/api/jobs/run": r_job_run,
+    "/api/jobs/live": r_jobs_live,
+    "/api/jobs/cancel": r_job_cancel,
     "/api/jobs/update": r_job_update,
     "/api/signals/seen": r_signal_seen,
     "/api/signals/promote": r_signal_promote,
@@ -1762,6 +2316,7 @@ ROUTES_POST = {
     "/api/offer/delete": r_offer_delete,
     "/api/offer/pitch": r_offer_pitch,
     "/api/offer/import": r_offer_import,
+    "/api/offer/read": r_offer_read,
     "/api/offer/connection/add": r_offer_connection_add,
     "/api/offer/connection/delete": r_offer_connection_delete,
     "/api/llm/save": r_llm_save,
@@ -1813,10 +2368,18 @@ def worker_loop(stop_event):
                 WORKER["last_tick_result"] = res
         except Exception as e:
             config.log("worker tick failed: %s\n%s" % (e, traceback.format_exc()))
+        try:
+            army.tick()
+        except Exception as e:
+            config.log("army tick failed: %s\n%s" % (e, traceback.format_exc()))
         if time.time() - last_sync > 600:
             try:
                 res = pipeline.sync_inbox()
                 last_sync = time.time()
+                try:
+                    res["sorted"] = army.sort_replies()
+                except Exception as e:
+                    config.log("reply sorting failed: %s" % e)
                 with WORKER_LOCK:
                     WORKER["last_sync"] = int(last_sync)
                     WORKER["last_sync_result"] = res
@@ -1873,10 +2436,13 @@ class Handler(BaseHTTPRequestHandler):
                 "<h2>You're unsubscribed</h2><p>You won't receive any more emails from this sender.</p>",
                 200, "text/html; charset=utf-8", {"Referrer-Policy": "no-referrer"})
         if path.startswith("/t/c/"):
+            # Only a link that really is in the message this token belongs to. Without the
+            # check this address forwarded to any URL at all - an open redirect on the
+            # tracking domain, which is what phishing mail borrows a good name with.
+            target = pipeline.click_target(path[5:], (query.get("u") or "").strip())
+            if not target:
+                return self._json({"ok": False, "error": "Unknown link."}, 404)
             pipeline.record_click(path[5:])
-            target = (query.get("u") or "").strip()
-            if not target.lower().startswith(("http://", "https://")):
-                target = "/"
             return self._text("", 302, "text/plain",
                               {"Location": target, "Referrer-Policy": "no-referrer"})
         if path.startswith("/t/v/"):
@@ -1885,19 +2451,40 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_video(urllib.parse.unquote(path[5:]))
         return self._json({"ok": False, "error": "Unknown link."}, 404)
 
-    def _stream(self, full):
+    def _chunks(self, parts, ctype, download):
+        """Send an iterable of text chunks as a download, without knowing the size first.
+
+        No Content-Length, so the end of the body is the end of the connection.
+        """
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", "attachment; filename=" + download)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for part in parts:
+                self.wfile.write(part.encode("utf-8") if isinstance(part, str) else part)
+        except (BrokenPipeError, ConnectionError):
+            pass                                   # the download was cancelled
+        except Exception as exc:                   # noqa: BLE001 - headers are already out
+            config.log("export failed part-way: %s\n%s" % (exc, traceback.format_exc()))
+
+    def _stream(self, full, ctype="", download=""):
         try:
             size = os.path.getsize(full)
             handle = open(full, "rb")
         except OSError:
             return self._json({"ok": False, "error": "That file could not be opened."}, 404)
-        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        ctype = ctype or mimetypes.guess_type(full)[0] or "application/octet-stream"
         with handle:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition",
-                             'inline; filename="%s"' % os.path.basename(full))
+                             ('attachment; filename="%s"' % download) if download
+                             else 'inline; filename="%s"' % os.path.basename(full))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             while True:
@@ -1927,6 +2514,12 @@ class Handler(BaseHTTPRequestHandler):
         """Only answer requests addressed to this machine (blocks DNS rebinding)."""
         host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
         return host in ("127.0.0.1", "localhost", "::1", "[::1]", "")
+
+    def _has_token(self, query=None):
+        """The session token from the header, or `?t=` for a link the browser opens itself."""
+        expected = str(config.load_settings().get("session_token") or "")
+        given = self.headers.get("X-LS-Token") or (query or {}).get("t") or ""
+        return bool(expected) and hmac.compare_digest(str(given), expected)
 
     def _raw(self):
         """Read the request body once, always - leaving it unread makes Windows
@@ -2010,6 +2603,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/social/file":
             return self._send_file(query)
 
+        # Everything below hands out data (leads, settings, logs), so it needs the session
+        # token just like the write endpoints. The Host check alone let any program on this
+        # computer - or anything reaching the port through a tunnel that rewrites Host - read it.
+        if (path in ROUTES_GET or path in ("/export.csv", "/export.parquet", "/export.duckdb",
+                                           "/brand/cases.csv")) and not self._has_token(query):
+            return self._json({"ok": False, "error": "Session expired. Refresh the page."}, 403)
+
         if path in ROUTES_GET:
             try:
                 return self._json(ROUTES_GET[path](query))
@@ -2018,25 +2618,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": str(e)}, 500)
 
         if path == "/export.csv":
-            status = query.get("status") or ""
-            data, n = importer.export_csv(status=status, search=query.get("q") or "")
-            return self._text(data, 200, "text/csv; charset=utf-8",
-                              {"Content-Disposition": "attachment; filename=leads.csv"})
+            # Sent while it is read, a few thousand rows at a time: building the whole file
+            # first needs gigabytes of memory once the table has millions of leads.
+            return self._chunks(importer.iter_export_csv(status=query.get("status") or "",
+                                                         search=query.get("q") or ""),
+                                "text/csv; charset=utf-8", "leads.csv")
 
         if path in ("/export.parquet", "/export.duckdb"):
             try:
                 if path.endswith(".parquet"):
-                    data = importer.export_parquet(status=query.get("status") or "",
-                                                   search=query.get("q") or "")
-                    fname, ctype = "leads.parquet", "application/octet-stream"
+                    full = importer.export_parquet_file(status=query.get("status") or "",
+                                                        search=query.get("q") or "")
+                    fname = "leads.parquet"
                 else:
-                    data = importer.export_duckdb(status=query.get("status") or "",
-                                                  search=query.get("q") or "")
-                    fname, ctype = "leads.duckdb", "application/octet-stream"
+                    full = importer.export_duckdb_file(status=query.get("status") or "",
+                                                       search=query.get("q") or "")
+                    fname = "leads.duckdb"
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
-            return self._text(data, 200, ctype,
-                              {"Content-Disposition": "attachment; filename=" + fname})
+            try:
+                return self._stream(full, ctype="application/octet-stream", download=fname)
+            finally:
+                try:
+                    os.remove(full)
+                except OSError:
+                    pass
 
         if path == "/brand/cases.csv":
             data, n = r_brand_cases_csv(query)
@@ -2061,8 +2667,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._text("ok", 200, "text/plain", {"Referrer-Policy": "no-referrer"})
         if not self._local_request():
             return self._json({"ok": False, "error": "Not available."}, 403)
-        token = config.load_settings().get("session_token")
-        if (self.headers.get("X-LS-Token") or "") != token:
+        if not self._has_token():
             return self._json({"ok": False, "error": "Session expired. Refresh the page."}, 403)
         handler = ROUTES_POST.get(path)
         if not handler:
@@ -2133,6 +2738,23 @@ PORT = config.DEFAULT_PORT
 
 def serve(port=None, open_browser=True, window=False, tray=True):
     global PORT
+    if not instance.acquire():
+        # Lead Studio is already running on this data folder. A second send worker and a
+        # second scheduler on the same database would mail people twice, so show the copy
+        # that is running instead of starting another one.
+        url = "http://127.0.0.1:%d/" % instance.running_port()
+        print("  %s is already running: %s" % (config.APP_NAME, url))
+        if window:
+            from . import window as window_mod
+            if window_mod.available():
+                try:
+                    window_mod.run(url)
+                    return
+                except Exception:                      # noqa: BLE001 - fall back to the browser
+                    pass
+        if open_browser or window:
+            _open_browser(url)
+        return
     db.init_db()
     net.set_contact(config.load_settings().get("contact_email"))
     scheduler.start()
@@ -2142,6 +2764,7 @@ def serve(port=None, open_browser=True, window=False, tray=True):
             port = candidate
             break
     PORT = port
+    instance.write_port(port)
     httpd = make_server(port)
     httpd.daemon_threads = True
     stop = threading.Event()

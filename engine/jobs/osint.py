@@ -3,9 +3,23 @@ from .. import dorks, osint
 from .base import Job, Context
 
 
+def _not_set_up(ctx, what):
+    """A scheduled job with nothing to work on is skipped, not failed.
+
+    These jobs ship switched on with empty parameters; raising here put a traceback in the
+    log and a red "error" on the Automation page every day until someone filled them in.
+    """
+    note = "Skipped - not set up yet. Give this job %s under its parameters." % what
+    ctx.log(note)
+    return ctx.summary(ok=True, skipped=True, note=note)
+
+
 def run_radar(ctx):
     source = str(ctx.param("source") or "").strip()
     brands = str(ctx.param("brands") or "").strip()
+    if not source:
+        return _not_set_up(ctx, "a domain feed in 'source' (a domains-monitor zip, a text file "
+                                "of domains, or a URL)")
     answer = osint.scan(source, brands_text=brands, limit=ctx.int_param("limit", 5000))
     ctx.log("%d domains scanned against %d brands: %d fake-shop hits" % (
         answer["scanned"], answer["brands"], answer["hit_count"]))
@@ -30,6 +44,8 @@ def run_profile(ctx):
 
 
 def run_dorks(ctx):
+    if not str(ctx.param("brands") or "").strip():
+        return _not_set_up(ctx, "at least one brand in 'brands'")
     answer = dorks.sweep_brands(str(ctx.param("brands") or ""),
                                 own_domains=[d for d in str(ctx.param("own") or "").split(",") if d.strip()],
                                 per_brand=ctx.int_param("per_brand", 5),
@@ -42,6 +58,8 @@ def run_dorks(ctx):
 
 def run_discover(ctx):
     brands = [" ".join(line.split()) for line in str(ctx.param("brands") or "").splitlines() if line.strip()]
+    if not brands:
+        return _not_set_up(ctx, "at least one brand in 'brands'")
     total, errors = 0, []
     for brand in brands[:5]:
         try:

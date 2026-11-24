@@ -7,10 +7,15 @@ import os
 import json
 import secrets
 import sys
+import threading
 import time
 
-VERSION = "1.36.3"
+VERSION = "1.37.1"
 APP_NAME = "Lead Studio Lite"
+
+# The LinkedIn table (about 105 million contacts) is sold as a subscription. The app does not
+# ship the downloader: the Leads > LinkedIn data button opens this page, and nothing else.
+LINKEDIN_OFFER_URL = "https://123brando--verkaufstunnel.thrivecart.com/leadscm-unlimited-leads-offer/"
 
 FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
@@ -51,12 +56,33 @@ DEFAULTS = {
     },
     "tracking": {"enabled": True, "base_url": ""},
     "verify": {"mx": True, "smtp_probe": False},
-    "connectors": {"hunter_key": "", "ai_base": "", "ai_key": "", "ai_model": "", "serper_key": ""},
+    "connectors": {"hunter_key": "", "ai_base": "", "ai_key": "", "ai_model": "",
+                   "serper_key": "", "dnsniffer_key": ""},
     # The offers shipped in the app are the distributor's recommendations; keep them
     # read-only for the person running it. Unlock in Settings to edit your own build.
     "offers_locked": True,
     "ui": {"density": "comfortable"},
 }
+
+
+# One lock for every read and write of settings.json inside this process. On Windows a file
+# that another thread has open cannot be replaced (WinError 32), and every request reads it.
+_SETTINGS_LOCK = threading.RLock()
+
+
+def _retry_io(action, attempts=12, pause=0.05):
+    """Run a file operation again when Windows says another process has the file open.
+
+    The lock above covers this process; the MCP server, a second copy of the app or an
+    antivirus scan can still hold settings.json for a moment.
+    """
+    for attempt in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(pause * (attempt + 1))
 
 
 def _deep_merge(base, over):
@@ -84,36 +110,51 @@ def _quarantine_settings():
 
 def load_settings():
     ensure_dirs()
-    data = {}
-    broken = False
-    try:
+
+    def read():
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict):
-            # Valid JSON, but not an object: merge would crash on every request.
+            return json.load(fh)
+
+    with _SETTINGS_LOCK:
+        data = {}
+        broken = False
+        try:
+            data = _retry_io(read)
+            if not isinstance(data, dict):
+                # Valid JSON, but not an object: merge would crash on every request.
+                data = {}
+                broken = True
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError, UnicodeDecodeError):
             data = {}
             broken = True
-    except FileNotFoundError:
-        data = {}
-    except (OSError, ValueError, UnicodeDecodeError):
-        data = {}
-        broken = True
-    if broken:
-        _quarantine_settings()
-    s = _deep_merge(DEFAULTS, data)
-    if not s.get("session_token"):
-        s["session_token"] = secrets.token_hex(24)
-        save_settings(s)
-    return s
+        if broken:
+            _quarantine_settings()
+        s = _deep_merge(DEFAULTS, data)
+        if not s.get("session_token"):
+            s["session_token"] = secrets.token_hex(24)
+            save_settings(s)
+        return s
 
 
 def save_settings(s):
     ensure_dirs()
-    tmp = SETTINGS_PATH + ".tmp"
     clean = _deep_merge(DEFAULTS, s)
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(clean, fh, indent=2)
-    os.replace(tmp, SETTINGS_PATH)
+    with _SETTINGS_LOCK:
+        # A name of its own per writer: two processes sharing "settings.json.tmp" could
+        # truncate each other's half-written file.
+        tmp = "%s.%d.%d.tmp" % (SETTINGS_PATH, os.getpid(), threading.get_ident())
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(clean, fh, indent=2)
+            _retry_io(lambda: os.replace(tmp, SETTINGS_PATH))
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     return clean
 
 

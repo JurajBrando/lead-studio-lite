@@ -1,0 +1,266 @@
+"""The Upgrades shelf: the owner's own affiliate tools.
+
+This is deliberately NOT the offers layer. An offer is a product the person
+puts into Radar and hunts customers for. This shelf is the owner's own
+monetisation: affiliate and referral links shown to the person as a read-only
+list. The links are hard-coded here so they survive deleting the database,
+the data folder or any file next to the app.
+
+This module never imports the offers module and never reads or writes the
+offers table. Changing an offer in Radar cannot change this shelf, and
+changing this shelf cannot change Radar.
+"""
+
+SHELF = (
+    {
+        "name": "HYROS - ad tracking for paid social",
+        "category": "tracking",
+        "affiliate_url": "http://hyros.com/affiliate-grow.html?fpr=juraj70",
+        "keywords": "ecommerce, shopify, paid ads, meta ads, facebook ads, google ads, agency, roas, attribution",
+        "description": "Ad tracking that catches the sales Meta and Google miss, built for accounts spending $5K+/month on ads.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "HYROS AIR - AI sales agent",
+        "category": "tracking",
+        "affiliate_url": "http://hyros.com/affiliate-grow.html?fpr=juraj70",
+        "keywords": "sales, ai agent, follow up, ads, ecommerce, agency",
+        "description": "HYROS's AI sales agent that follows up with the leads your ads already generated.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "DataFast - revenue attribution",
+        "category": "analytics",
+        "affiliate_url": "https://datafa.st/?via=juraj",
+        "keywords": "ecommerce, saas, analytics, attribution, marketing, revenue, shopify",
+        "description": "Analytics that shows which marketing channels actually drive revenue, from first click to customer.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "PLAI - AI ads management",
+        "category": "ads",
+        "affiliate_url": "https://app.plai.io/?rfsn=7874301.f07fd9",
+        "keywords": "ads, google ads, facebook ads, ecommerce, agency, marketing, creative",
+        "description": "AI ads management: run Google and Facebook campaigns, find keywords and creative angles faster.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "BabyLoveGrowth - SEO and AI traffic",
+        "category": "seo",
+        "affiliate_url": "https://babylovegrowth.ai/?via=juraj",
+        "keywords": "seo, content, blog, backlinks, traffic, chatgpt, ecommerce, saas, agency",
+        "description": "Backlinks and SEO-optimised content that get Google and ChatGPT traffic without a content team.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "WhitePress - content marketing",
+        "category": "seo",
+        "affiliate_url": "https://www.whitepress.com/d84ve",
+        "keywords": "seo, content, articles, publishing, pr, marketing, agency",
+        "description": "Content marketing platform for publishing articles and sponsored content across thousands of sites.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "PinGenerator - Pinterest pins",
+        "category": "social",
+        "affiliate_url": "https://pingenerator.com/?pgref=brando",
+        "keywords": "pinterest, ecommerce, blog, affiliate, social media, traffic, shopify",
+        "description": "Generates Pinterest pins for ecommerce stores, blogs and affiliate sites at volume.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "bundle.social - unified social API",
+        "category": "social",
+        "affiliate_url": "https://bundle.social",
+        "keywords": "social media, api, developer, automation, scheduling, agency, saas",
+        "description": "One API for posting to every social network, built for developers and agencies shipping automation.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "micro1 - license your operational data",
+        "category": "ai",
+        "affiliate_url": "https://company.micro1.ai/register/?referralCode=7a3a6a29-09f7-4c7a-8d43-1a2a789d8374&utm_source=referral&utm_medium=share&utm_campaign=job_referral",
+        "keywords": "ai, data, enterprise, operations, 30 employees, manufacturing, logistics, saas",
+        "description": "Get paid to license your company's operational data - aimed at firms with 30+ employees.",
+        "commission": "referral programme",
+    },
+    {
+        "name": "Red Points - brand protection",
+        "category": "brand",
+        "affiliate_url": "https://www.redpoints.com/request-demo-affiliate/?referredid=255256383275",
+        "keywords": "brand, counterfeit, impersonation, ecommerce, trademark, fraud, marketplace, fashion",
+        "description": "Detects and removes counterfeits and brand impersonators across marketplaces, social and websites.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "QuoteIQ - software for home service pros",
+        "category": "home services",
+        "affiliate_url": "https://admin-quoteiq.web.app/register?via=juraj",
+        "keywords": "roofing, plumbing, hvac, landscaping, construction, contractor, estimates, invoices, crm",
+        "description": "All-in-one CRM for home service contractors: estimates, invoices, scheduling and customers.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Ataraxis - virtual assistants",
+        "category": "staffing",
+        "affiliate_url": "https://ataraxismgmt.com/hire-virtual-assistants/?fpr=juraj-6235be",
+        "keywords": "virtual assistant, staffing, outsourcing, hiring, agency, ecommerce, real estate, admin",
+        "description": "Hire vetted virtual assistants from the Philippines, Latin America and South Africa in under two weeks.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Dermis - clinic sales engine",
+        "category": "medical",
+        "affiliate_url": "https://www.dermis.app/?_from=juraj36",
+        "keywords": "clinic, medical, dental, medspa, aesthetics, dermatology, patients, booking, healthcare",
+        "description": "A 24/7 sales engine for clinics: captures and converts patient enquiries automatically.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Synder - accounting for ecommerce",
+        "category": "accounting",
+        "affiliate_url": "https://partnerstack.synder.com/pivopolitickeinovacieveselychobcanov6926",
+        "keywords": "accounting, bookkeeping, ecommerce, saas, shopify, quickbooks, xero, reconciliation, finance",
+        "description": "AI-driven accounting infrastructure that syncs ecommerce and SaaS revenue into QuickBooks or Xero.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Lumrid - bulk email verifier",
+        "category": "outreach",
+        "affiliate_url": "http://lumrid.com",
+        "keywords": "email verification, deliverability, cold email, lists, bounces, outreach",
+        "description": "Unlimited bulk email verification to clean a list before you spend sends on it.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "ManyReach - cold email sending",
+        "category": "outreach",
+        "affiliate_url": "https://go.manyreach.com/?prtnr=juraj",
+        "keywords": "cold email, outreach, sending, deliverability, agency, sales, leads",
+        "description": "Cold email platform with warmed mailboxes and 300,000 emails a month, for life.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Smartlead - cold email at scale",
+        "category": "outreach",
+        "affiliate_url": "https://smartlead.ai/?via=juraj",
+        "keywords": "cold email, outreach, agency, sales, campaigns, deliverability, leads",
+        "description": "Cold email software for sales teams running outbound at scale, with mailbox rotation.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "GoHighLevel - agency CRM",
+        "category": "crm",
+        "affiliate_url": "https://www.gohighlevel.com/?fp_ref=brando-gives10",
+        "keywords": "agency, crm, funnels, automation, white label, sms, marketing, local business",
+        "description": "All-in-one sales and marketing platform agencies can white-label and resell to clients.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Keap - small business CRM",
+        "category": "crm",
+        "affiliate_url": "https://get.keap.com/x998m0310xtl",
+        "keywords": "crm, small business, automation, email marketing, local business, service business",
+        "description": "CRM and marketing automation built for small businesses that run on referrals and follow-up.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Flowlu - projects and CRM",
+        "category": "crm",
+        "affiliate_url": "https://www.flowlu.com/?fpr=juraj-4ffd03",
+        "keywords": "crm, project management, agency, tasks, invoicing, small business, operations",
+        "description": "Project management and CRM in one: tasks, deals, invoices and client portals.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Odoo - open source ERP and CRM",
+        "category": "erp",
+        "affiliate_url": "https://www.odoo.com/r/aff-sales0",
+        "keywords": "erp, crm, manufacturing, inventory, accounting, hr, operations, mid market",
+        "description": "Open-source ERP and CRM covering sales, inventory, manufacturing and accounting.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Sendr - cold outreach platform",
+        "category": "outreach",
+        "affiliate_url": "https://sendr.cello.so/gbD8PgNDYQv",
+        "keywords": "outreach, cold email, linkedin, campaigns, agency, sales, leads",
+        "description": "Outreach platform for running multi-channel prospecting campaigns from one place.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Decodo - proxies and scraping",
+        "category": "data",
+        "affiliate_url": "https://decodo.com/?utm_medium=affiliate&utm_source=Juraj+Brandobur&promoter_id=15856303&fpr=3637892",
+        "keywords": "proxy, scraping, data, web data, automation, developer, ecommerce, price monitoring",
+        "description": "Residential, mobile, ISP and datacenter proxies plus a web data API for collecting public data at scale.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Webglobe - hosting and domains",
+        "category": "infrastructure",
+        "affiliate_url": "https://webglobe.sk/?dealer=266740",
+        "keywords": "hosting, domains, website, small business, slovakia, email, wordpress",
+        "description": "Web hosting and domain registration for small businesses, with local support.",
+        "commission": "dealer programme",
+    },
+    {
+        "name": "CommissionCrowd - commission-only sales",
+        "category": "sales",
+        "affiliate_url": "https://www.commissioncrowd.com/?ref=jurajbrandobur3",
+        "keywords": "sales, commission only, agents, b2b, partnerships, saas, distribution",
+        "description": "Marketplace of commission-only sales agents and reps for products looking for distribution.",
+        "commission": "referral programme",
+    },
+    {
+        "name": "Ambassador - referral programmes",
+        "category": "referrals",
+        "affiliate_url": "http://referral.getambassador.com/6msVFj",
+        "keywords": "referral, affiliate, partnerships, ecommerce, saas, tracks, incentives, marketing",
+        "description": "Referral and partner programme software: cut acquisition costs and recover unused incentive budgets.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Dealify - SaaS lifetime deals",
+        "category": "software deals",
+        "affiliate_url": "https://dealify.com/?ref=juraj_brandobur",
+        "keywords": "saas, lifetime deal, software, small business, founder, tools, budget",
+        "description": "Marketplace of SaaS lifetime deals for founders and small teams that want tools without subscriptions.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Leadscm - 700M+ contact database",
+        "category": "data",
+        "affiliate_url": "https://123brando--verkaufstunnel.thrivecart.com/leadscm-unlimited-leads-offer/",
+        "keywords": "leads, database, b2b, email list, prospecting, sales, data",
+        "description": "Contact database with 700M+ leads and no export limits, aimed at outbound teams.",
+        "commission": "affiliate programme",
+    },
+    {
+        "name": "Dropship.io - winning products",
+        "category": "ecommerce",
+        "affiliate_url": "https://dropship.io/?fpr=juraj-13",
+        "keywords": "dropshipping, ecommerce, product research, shopify, ads, store, trend",
+        "description": "Product research for dropshipping and ecommerce: find products already selling before you stock them.",
+        "commission": "affiliate programme",
+    },
+)
+
+
+def items():
+    """The shelf, in the shape the Upgrades tab expects, numbered from 1."""
+    out = []
+    for row in SHELF:
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "id": len(out) + 1,
+            "name": name,
+            "category": (row.get("category") or "").strip() or "other",
+            "description": (row.get("description") or "").strip(),
+            "url": (row.get("affiliate_url") or "").strip(),
+            "commission": (row.get("commission") or "").strip(),
+            "keywords": (row.get("keywords") or "").strip(),
+        })
+    return out

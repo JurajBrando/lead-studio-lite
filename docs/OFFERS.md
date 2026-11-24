@@ -48,14 +48,16 @@ exactly as you shipped them.
 To manage your own copy, Settings → **Keep the Toolbox read-only** → untick. New offer, Import JSON
 and Load starter pack then appear. Turn it back on before you package the build.
 
-## The starter pack
+## The Upgrades shelf
 
-`samples/offers-pack.json` holds 29 tools in 20 categories. Load it with **Load starter pack**
-(unlocked), or from the command line:
+The shelf is hard-coded in `engine/upgrades.py`: 29 tools in 20 categories with the owner's
+affiliate and referral links. It is read-only and completely separate from offers - it imports no
+offers code, reads no file and never touches the offers table, so deleting the database, the data
+folder or `samples/` leaves it intact. Your own offers - the ones Radar and the Army work on - live
+in the offers table and are managed in Radar. The two lists never mix.
 
-```bash
-python leadstudio.py --seed-offers
-```
+To change a link, edit `SHELF` in `engine/upgrades.py`. `samples/offers-pack.json` is an old copy
+and is no longer read by the app.
 
 If you distribute this app, **the links in that file should be yours**. They carry the referral
 codes of whoever built the pack; replacing them is the difference between recommending a tool and

@@ -37,8 +37,6 @@ def main(argv=None):
     ap.add_argument("--no-tray", action="store_true", help="do not create the tray icon")
     ap.add_argument("--seed-demo", action="store_true")
     ap.add_argument("--reset-demo", action="store_true")
-    ap.add_argument("--seed-offers", action="store_true",
-                    help="import the starter offer pack from samples/offers-pack.json")
     ap.add_argument("--mcp", action="store_true",
                     help="run the MCP stdio server instead of the web app")
     ap.add_argument("--video-maker", action="store_true",
@@ -49,6 +47,8 @@ def main(argv=None):
     ap.add_argument("--out", default="", help="where --pick-file writes the chosen path")
     ap.add_argument("--title", default="Choose a file", help="dialog title (with --pick-file)")
     ap.add_argument("--extensions", default="", help="comma separated (with --pick-file)")
+    ap.add_argument("--multi", action="store_true",
+                    help="let the dialog choose several files (with --pick-file)")
     ap.add_argument("--version", action="store_true")
     args = ap.parse_args(argv)
 
@@ -60,8 +60,11 @@ def main(argv=None):
         # A child process, so tkinter gets its own main thread and the dialog cannot
         # disturb the server's event loop.
         from engine import picker
-        return picker.main(["--out", args.out, "--title", args.title,
-                            "--extensions", args.extensions])
+        argv_pick = ["--out", args.out, "--title", args.title,
+                     "--extensions", args.extensions]
+        if args.multi:
+            argv_pick.append("--multi")
+        return picker.main(argv_pick)
 
     if args.video_maker:
         # Runs as a child process of the app, so the render cannot block the server. On a
@@ -81,10 +84,6 @@ def main(argv=None):
         print(demo.remove())
     if args.seed_demo:
         print(demo.seed())
-    if args.seed_offers:
-        from engine import offers as offers_module
-        print(offers_module.import_pack())
-
     from engine import window as window_mod
     from engine.server import serve
     use_window = args.window or (not args.browser and not args.no_browser

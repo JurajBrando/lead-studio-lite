@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import cc_warc, config, crawl, db
+from . import cc_warc, config, crawl, db, leadbook
 
 TABLE = "cc_fetch"
 HOST = "data.commoncrawl.org"
@@ -100,16 +100,22 @@ def rkey(domain, kind):
     return "%s|%s" % (str(domain or "").lower(), kind)
 
 
-def done_keys():
+def done_keys(domains=None):
+    """Every finished record, or only those of the given domains."""
     ensure_table()
+    if domains:
+        marks = ",".join("?" for _ in domains)
+        return {row["rkey"] for row in db.rows(
+            "SELECT rkey FROM cc_fetch WHERE status='OK' AND domain IN (%s)" % marks,
+            tuple(domains))}
     return {row["rkey"] for row in db.rows("SELECT rkey FROM cc_fetch WHERE status='OK'")}
 
 
-def plan(domains, bands, local_dir="", per_domain=2, status=200):
+def plan(domains, bands, local_dir="", per_domain=2, status=200, source="bucket", crawl=""):
     """[(domain, kind, url, file, off, len)] - homepage and contact page of each domain."""
     from . import cc_index
     rows = cc_index.plan_pages(domains, bands=bands, local_dir=local_dir,
-                               per_domain=per_domain, status=status)
+                               per_domain=per_domain, status=status, source=source)
     return [(row["domain"], row["kind"], row["url"], row["warc_filename"],
              row["offset"], row["length"]) for row in rows]
 
@@ -131,11 +137,13 @@ def _fetch_one(row, timeout=60, source="http"):
     parsed = cc_warc.parse_record(raw)
     if not parsed.get("ok"):
         return {"rkey": rkey(domain, kind), "domain": domain, "kind": kind, "url": url,
-                "status": "BADRECORD", "emails": [], "phones": [], "title": ""}
+                "status": "BADRECORD", "emails": [], "phones": [], "title": "",
+                "description": ""}
     info = cc_warc.contacts_of(parsed.get("html"), domain)
     return {"rkey": rkey(domain, kind), "domain": domain, "kind": kind, "url": url,
             "status": "OK" if parsed.get("status") == 200 else "HTTP%d" % parsed.get("status"),
-            "emails": info["emails"], "phones": info["phones"], "title": info["title"]}
+            "emails": info["emails"], "phones": info["phones"], "title": info["title"],
+            "description": info.get("description", "")}
 
 
 def run(plan_rows, parallel=24, timeout=60, progress=None, source="http"):
@@ -177,9 +185,15 @@ def save(results):
             (result["rkey"], result["domain"], result["kind"], result["url"], result["status"],
              ";".join(result["emails"]), ";".join(result["phones"]), result["title"][:200], now))
         entry = by_domain.setdefault(result["domain"], {"emails": [], "phones": [],
-                                                        "title": "", "pages": []})
+                                                        "title": "", "pages": [],
+                                                        "description": "",
+                                                        "contact_url": ""})
         entry["pages"].append(result["url"])
+        if result["kind"] == "c" and not entry["contact_url"]:
+            entry["contact_url"] = result["url"]
         entry["title"] = entry["title"] or result["title"]
+        if len(result.get("description") or "") > len(entry["description"]):
+            entry["description"] = result.get("description") or ""
         for email in result["emails"]:
             if email not in entry["emails"]:
                 entry["emails"].append(email)
@@ -187,24 +201,32 @@ def save(results):
             if phone not in entry["phones"]:
                 entry["phones"].append(phone)
     created = 0
+    enriched = 0
     for domain, entry in by_domain.items():
-        db.execute("UPDATE domains SET cc_checked_ts=? WHERE domain=?", (now, domain))
+        if not entry["contact_url"]:
+            entry["contact_url"] = entry["pages"][0] if entry["pages"] else ""
+        db.execute("UPDATE domains SET cc_checked_ts=?, cc_pages=? WHERE domain=?",
+                   (now, len(set(entry["pages"])), domain))
         db.execute("UPDATE domains SET data=? WHERE domain=?", (_merge_data(domain, entry), domain))
-        if not entry["emails"]:
-            continue
-        if db.one("SELECT id FROM leads WHERE domain=? AND email<>'' LIMIT 1", (domain,)):
+        if not (entry["emails"] or entry["phones"] or entry["description"]):
             continue
         company = (entry["title"].split("|")[0].split("—")[0].strip()[:120] or domain)
         notes = "Found in the Common Crawl archive on %s" % (entry["pages"][0] if entry["pages"] else domain)
         if entry["phones"]:
             notes += " | phones: %s" % ", ".join(entry["phones"][:3])
-        db.insert("leads", {"email": entry["emails"][0].lower(), "company": company,
-                            "domain": domain, "source": "cc-warc", "status": "new",
-                            "verify_status": "unverified", "notes": notes[:2000],
-                            "created_ts": now, "updated_ts": now})
-        created += 1
+        answer = leadbook.upsert(
+            domain=domain, company=company, email=(entry["emails"] or [""])[0],
+            phone=(entry["phones"] or [""])[0], website="https://" + domain,
+            description=entry["description"], source="cc-warc", notes=notes[:2000])
+        if answer["created"]:
+            created += 1
+        elif answer["changed"]:
+            enriched += 1
     return {"domains": len(by_domain), "leads": created,
-            "with_email": sum(1 for entry in by_domain.values() if entry["emails"])}
+            "enriched": enriched,
+            "with_email": sum(1 for entry in by_domain.values() if entry["emails"]),
+            "with_contact": sum(1 for entry in by_domain.values()
+                                if entry["emails"] or entry["phones"])}
 
 
 def _merge_data(domain, entry):
@@ -216,6 +238,8 @@ def _merge_data(domain, entry):
         payload = {}
     payload.update({"contact_checked_ts": db.now(), "emails": entry["emails"][:12],
                     "phones": entry["phones"][:5], "title": entry["title"][:200],
+                    "description": (entry.get("description") or "")[:400],
+                    "contact_url": entry.get("contact_url") or "",
                     "pages": entry["pages"][:5], "source": "cc-warc"})
     return json.dumps(payload)[:8000]
 

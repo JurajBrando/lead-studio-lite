@@ -13,8 +13,10 @@ Nothing here invents data: the email address comes from the signal's domain (`in
 what you type, and a finding with no domain cannot be contacted.
 """
 import json
+import re
+import unicodedata
 
-from . import config, db, mail, offers, pipeline
+from . import config, db, mail, net, offers, pipeline, radar
 
 # Where the offer's keywords are looked for, and how much each field counts.
 FIELDS = (("company", 3), ("title", 2), ("kind", 1), ("domain", 1))
@@ -87,6 +89,133 @@ def _payload(raw):
     except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+# ------------------------------------------------------------------ what the jobs found
+SIGNAL_DAYS = 180
+SIGNAL_LIMIT = 9000
+SUMMARY_TTL = 300
+_SUMMARY = {"key": None, "at": 0, "data": None}
+
+# Words every job repeats ("hiring", "senior", "manager", a company suffix, a country):
+# they say nothing about who the signal is about.
+SIGNAL_STOP = set(radar.STOP_WORDS) | set("""hiring job jobs role remote senior junior staff
+lead head chief principal manager director specialist engineer developer designer analyst
+consultant assistant associate coordinator executive officer president founder owner partner
+team department division group full part time contract permanent hybrid office based location
+posted new open apply careers career salary position description responsibilities requirements
+experience years work working company companies business businesses services solutions platform
+software technology technologies digital online global international national regional local
+marketing media agency shop store ecommerce e-commerce retail wholesale trade industry
+get started learn more book demo contact today mail server data warm hot cold site
+home runs run page pages visit view read search duck duckduckgo google bing tool tools""".split())
+
+SIGNAL_CORP = set("""gmbh srl sro ltd llc inc corp co company group holding holdings international
+consulting solutions services service agency marketing digital media shop store online global
+trading enterprises industries systems technology technologies partners ventures capital invest
+sarl spa sl sa lda kft sia ou bv nv ab oy plc pty pte ug kg mbh eood doo limited""".split())
+
+
+def _fold(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(ch for ch in text if not unicodedata.combining(ch)).lower().strip()
+
+
+COUNTRY_FOLD = ({_fold(alias) for alias in net.COUNTRY_ALIASES}
+                | {_fold(name) for name in net.COUNTRIES})
+
+
+def _signal_words(value):
+    text = re.sub(r"\[[^\]]*\]", " ", str(value or ""))
+    # A domain or a URL in a title names the source, not what the finding is about.
+    text = re.sub(r"(?i)\b(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*"
+                  r"\.(?:com|net|org|io|co|eu|sk|cz|de|at|uk|pl|hu|fr|es|it|nl|be|ch|se|"
+                  r"no|dk|fi|ro|bg|hr|si|rs|ua|us|ca|au|nz|info|biz|shop|store|online|"
+                  r"site|app|ai|dev)\b(?:/\S*)?", " ", text)
+    out = []
+    for token in re.findall(r"[^\W\d_][\w'+-]*", text.lower()):
+        token = token.strip("'+-")
+        if (len(token) < 4 or token.isdigit() or token in SIGNAL_STOP or token in SIGNAL_CORP
+                or _fold(token) in COUNTRY_FOLD or not re.search(r"[a-z]", token)):
+            continue
+        out.append(token)
+    return out
+
+
+def _top(counts, limit):
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [name for name, _count in ranked[:limit]]
+
+
+def signals_summary(days=SIGNAL_DAYS, limit=SIGNAL_LIMIT):
+    """Every finding the daily jobs wrote, folded into the points a hunt can aim at.
+
+    It reads the `signals` table the jobs already fill - ad spenders, hiring, qualified
+    sites and their flags, new domains, copycats - and returns what repeats: the kinds and
+    their counts, the words in the companies and titles, the flags the qualifying jobs
+    found, the cohorts and offers they ran for, and the countries they sit in. Counts only;
+    nothing here is inferred from a page.
+    """
+    key = (int(days), int(limit))
+    if _SUMMARY["key"] == key and _SUMMARY["at"] and db.now() - _SUMMARY["at"] < SUMMARY_TTL:
+        return dict(_SUMMARY["data"])
+    cutoff = db.now() - int(days) * 86400
+    rows = db.rows("SELECT kind, company, domain, title, payload, ts FROM signals "
+                   "ORDER BY id DESC LIMIT ?", (int(limit),))
+    kinds, words, flags, cohorts, offer_names, markets = {}, {}, {}, {}, {}, {}
+    samples, total = [], 0
+    for row in rows:
+        ts = int(row.get("ts") or 0)
+        if ts and ts < cutoff:
+            continue
+        kind = radar.kind_of(row.get("kind"))
+        total += 1
+        if kind != "mx_missing":            # a dead mailbox is not a market finding
+            kinds[kind] = kinds.get(kind, 0) + 1
+        payload = _payload(row.get("payload"))
+        for field in ("signals", "flags"):
+            value = payload.get(field)
+            if isinstance(value, list):
+                for item in value:
+                    label = str(item).replace("_", " ").strip().lower()
+                    if 3 <= len(label) <= 40:
+                        flags[label] = flags.get(label, 0) + 1
+        cohort = str(payload.get("cohort") or "").replace("_", " ").strip().lower()
+        if cohort:
+            cohorts[cohort] = cohorts.get(cohort, 0) + 1
+        offer_name = str(payload.get("offer") or "").strip()
+        if offer_name:
+            offer_names[offer_name] = offer_names.get(offer_name, 0) + 1
+        for field in ("location", "country"):
+            name = net.country_in(payload.get(field))
+            if name:
+                markets[name] = markets.get(name, 0) + 1
+        regions = payload.get("regions")
+        if isinstance(regions, str):
+            for part in re.split(r"[,;/]", regions):
+                name = net.country_in(part.strip())
+                if name:
+                    markets[name] = markets.get(name, 0) + 1
+        if kind != "mx_missing":
+            # One company counts once per word, however many job posts it wrote: a big
+            # brand with 400 postings must not outrank an industry that 40 firms name.
+            source = str(row.get("company") or row.get("domain") or ts)
+            for field in ("company", "title"):
+                for word in _signal_words(row.get(field)):
+                    words.setdefault(word, set()).add(source)
+        if (row.get("domain") and kind not in ("mx_missing", "new_domain")
+                and len(samples) < 8):
+            samples.append({"company": str(row.get("company") or ""), "domain": row.get("domain"),
+                            "kind": kind, "title": str(row.get("title") or "")[:80], "ts": ts})
+    ranked = [word for word, sources in sorted(words.items(),
+                                               key=lambda kv: (-len(kv[1]), kv[0]))
+              if len(sources) >= 4][:10]
+    data = {"total": total, "days": int(days), "kinds": kinds, "words": ranked,
+            "flags": _top(flags, 8), "cohorts": _top(cohorts, 4),
+            "offers": _top(offer_names, 4), "markets": _top(markets, 6),
+            "samples": samples, "read_at": db.now()}
+    _SUMMARY.update({"key": key, "at": data["read_at"], "data": data})
+    return dict(data)
 
 
 def signal(signal_id):

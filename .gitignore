@@ -30,6 +30,15 @@ Thumbs.db
 # Personal working copy - never commit
 PERSONAL_README.md
 _e2e/
+backups/
+*.bak
+*.bak-*
+
+# Paid leads.cm LinkedIn downloader - belongs to the publisher's own copy only
+engine/leadscm.py
+engine/leadscm_countries.json
+engine/jobs/leadscm.py
+tests/test_leadscm.py
 
 # Imported data files (the LEAD_INDEX dumps are tens of gigabytes)
 imports/

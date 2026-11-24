@@ -121,11 +121,12 @@ class MissingFolderTests(unittest.TestCase):
         return job(ctx)
 
     def test_pipeline_without_its_folder(self):
+        original = external.DEFAULTS["studio"]
         external.DEFAULTS["studio"] = os.path.join(tempfile.gettempdir(), "no-pipeline-here")
         try:
             answer = self.run_job(pipeline_run.run)
         finally:
-            external.DEFAULTS["studio"] = r"C:\Users\admin\Desktop\Modulario\LEAD_STUDIO"
+            external.DEFAULTS["studio"] = original
         self.assertFalse(answer["ok"])
         self.assertIn("not there", answer["error"])
 

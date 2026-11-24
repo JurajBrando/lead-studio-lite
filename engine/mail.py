@@ -174,6 +174,14 @@ def smtp_open(box, timeout=40):
             s.auth("XOAUTH2", lambda: oauth.xoauth2_b64(user, token))
         elif user and pw:
             s.login(user, pw)
+        elif not user or not pw:
+            try:
+                s.quit()
+            except (smtplib.SMTPException, OSError):
+                pass
+            return None, ("No password is saved for %s. Open the mailbox, paste the "
+                          "password once and press Save - an empty password is never "
+                          "tested, so it cannot pass." % (box.get("from_email") or "this mailbox"))
         return s, ""
     except smtplib.SMTPAuthenticationError as e:
         return None, ("The server rejected the username/password (%s). Gmail, Outlook and most providers "
@@ -187,13 +195,13 @@ def smtp_open(box, timeout=40):
 
 
 def smtp_send(box, to_addr, subject, text, html=None, unsub_mailto="", message_id="",
-              unsub_url=""):
+              unsub_url="", in_reply_to=""):
     """Send one message. Returns (ok, message_id_or_error)."""
     s, err = smtp_open(box)
     if not s:
         return False, err
     msg = build_message(box, to_addr, subject, text, html, unsub_mailto,
-                        message_id=message_id, unsub_url=unsub_url)
+                        in_reply_to=in_reply_to, message_id=message_id, unsub_url=unsub_url)
     try:
         s.send_message(msg)
         return True, (msg.get("Message-ID") or "").strip()
@@ -236,6 +244,37 @@ def imap_open(box, timeout=40):
         return None, "Could not reach IMAP at %s:%s (%s)." % (host, port, e)
 
 
+def probe_box(box, timeout=40):
+    """Try SMTP and IMAP once and report both. Shared by the UI, the jobs and the tests."""
+    out = {"smtp": "failed", "imap": "skipped", "smtp_detail": "", "imap_detail": "",
+           "unread": None}
+    conn, err = smtp_open(box, timeout=timeout)
+    if conn:
+        out["smtp"] = "ok"
+        try:
+            conn.quit()
+        except (smtplib.SMTPException, OSError):
+            pass
+    else:
+        out["smtp_detail"] = err
+    if (box.get("imap_host") or "").strip():
+        m, ierr = imap_open(box, timeout=timeout)
+        if m:
+            out["imap"] = "ok"
+            try:
+                m.select("INBOX", readonly=True)
+                _typ, data = m.search(None, "UNSEEN")
+                out["unread"] = len((data[0] or b"").split())
+                m.logout()
+            except Exception as e:                     # noqa: BLE001 - report, never fatal
+                out["imap_detail"] = str(e)
+        else:
+            out["imap"] = "failed"
+            out["imap_detail"] = ierr
+    out["ok"] = out["smtp"] == "ok" and out["imap"] in ("ok", "skipped")
+    return out
+
+
 def decode_header(value):
     if not value:
         return ""
@@ -274,7 +313,8 @@ def fetch_recent(box, days=14, limit=120):
             return [], "The mail server refused the search."
         ids = (data[0] or b"").split()[-int(limit):]
         for i in reversed(ids):
-            typ, d = m.fetch(i, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])")
+            typ, d = m.fetch(i, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES "
+                             "X-FAILED-RECIPIENTS)])")
             if typ != "OK" or not d or not isinstance(d[0], tuple):
                 continue
             msg = email.message_from_bytes(d[0][1])
@@ -286,10 +326,45 @@ def fetch_recent(box, days=14, limit=120):
                 "date": decode_header(msg.get("Date")),
                 "message_id": (msg.get("Message-ID") or "").strip(),
                 "in_reply_to": message_ids_of(msg),
+                # Gmail and Exim name the address that bounced right in the headers.
+                "failed_recipients": [a.strip().lower() for a in
+                                      (msg.get("X-Failed-Recipients") or "").split(",")
+                                      if "@" in a],
             })
         return items, ""
     except (imaplib.IMAP4.error, OSError) as e:
         return [], "Reading the inbox failed: %s" % e
+    finally:
+        try:
+            m.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+def fetch_bounce_text(box, message_id, size=30000):
+    """The first part of a bounce's body, as text - where the failed address is named.
+
+    A delivery report from Exchange, Postfix and many others carries no In-Reply-To header,
+    so the headers alone cannot say which message bounced. The report itself always does:
+    `Final-Recipient: rfc822; someone@example.com`, and usually the original Message-ID.
+    """
+    if not message_id:
+        return ""
+    m, err = imap_open(box)
+    if not m:
+        return ""
+    try:
+        m.select("INBOX", readonly=True)
+        typ, data = m.search(None, 'HEADER', 'Message-ID', '"%s"' % message_id.strip('<>'))
+        if typ != "OK" or not data or not data[0]:
+            return ""
+        typ, d = m.fetch(data[0].split()[-1], "(BODY.PEEK[TEXT]<0.%d>)" % int(size))
+        if typ != "OK" or not d or not isinstance(d[0], tuple):
+            return ""
+        raw = d[0][1]
+        return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    except (imaplib.IMAP4.error, OSError):
+        return ""
     finally:
         try:
             m.logout()

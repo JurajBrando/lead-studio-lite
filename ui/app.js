@@ -6,7 +6,7 @@
   var state = {
     data: null,
     view: 'dashboard',
-    leads: { items: [], total: 0, page: 1, pages: 1, q: '', status: '',
+    leads: { items: [], total: 0, page: 1, pages: 1, dropped: 0, q: '', status: '',
              filters: { sort: 'newest', country: '', title: '', industry: '', must_industry: '',
                         company_size: '', location: '', technologies: '', source: '' },
              facets: null, showFilters: false },
@@ -15,6 +15,8 @@
     signalKind: '',
     offers: [],
     offerCat: '',
+    upgrades: [],
+    upgradesLoaded: false,
     chatHistory: [],
     llmProviders: null,
     llmPresets: [],
@@ -39,6 +41,7 @@
     pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></svg>',
     video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 10.5 5-3v9l-5-3v-3Z"/></svg>',
     globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>',
+    army: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 7v5c0 4.4 3.4 8.2 8 9 4.6-.8 8-4.6 8-9V7l-8-4Z"/><path d="m8.5 12 2 2 2-3.5 2 3.5 1-1.5"/></svg>',
     sparkles: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.5 13.7 9l5.3 1.7-5.3 1.8L12 18l-1.7-5.5L5 10.7 10.3 9 12 3.5Z"/><path d="M18.5 16.5 19.2 19l2.3.7-2.3.8-.7 2.5-.8-2.5-2.2-.8 2.2-.7.8-2.5Z"/></svg>'
   };
 
@@ -47,6 +50,16 @@
   function h(v) {
     return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // The Upgrades shelf is a read-only list hard-coded in engine/upgrades.py. It is its own
+  // thing: not the offers table, not Radar, and it reads no file, so it survives a reset.
+  function loadUpgrades() {
+    if (state.upgradesLoaded) return Promise.resolve(state.upgrades);
+    return call('/api/upgrades').then(function (res) {
+      state.upgrades = (res && res.upgrades) || [];
+      state.upgradesLoaded = true;
+      return state.upgrades;
     });
   }
   function num(n) { return (n === null || n === undefined) ? '0' : Number(n).toLocaleString(); }
@@ -147,6 +160,11 @@
       state.data = res;
       paintChrome();
       render();
+      loadUpgrades().then(function () {
+        paintChrome();
+        if (state.view === 'army' || state.view === 'dashboard') render();
+        railLoad();
+      });
     }).catch(function () {
       $('#view').innerHTML = '<div class="empty"><div class="big">The app is not responding</div>' +
         '<p>Make sure the black command window (or LeadStudio.exe) is still open, then reload.</p>' +
@@ -185,6 +203,7 @@
         state.leads.items = res.leads;
         state.leads.total = res.total;
         state.leads.pages = res.pages;
+        state.leads.dropped = res.dropped || 0;
         state.leads.facets = res.facets || state.leads.facets;
         var totalEl = $('#lead-total');
         if (totalEl) totalEl.textContent = num(res.total) + ' contacts in this workspace.';
@@ -212,7 +231,9 @@
     if ($('#nav-jobs')) $('#nav-jobs').textContent = num(auto.due || 0);
     if ($('#nav-signals')) $('#nav-signals').textContent = num(auto.signals_new || 0);
     if ($('#nav-brands')) $('#nav-brands').textContent = num(auto.brands || 0);
-    if ($('#nav-offers')) $('#nav-offers').textContent = num(auto.offers_active || 0);
+    if ($('#nav-offers')) {
+      $('#nav-offers').textContent = num(state.upgradesLoaded ? state.upgrades.length : 0);
+    }
     var w = d.worker || {};
     var running = w.running;
     var last = w.last_tick_result || {};
@@ -228,17 +249,18 @@
     dot.className = 'dot ' + (running ? 'on' : 'off');
     $$('.nav-item').forEach(function (n) {
       var nav = n.dataset.nav;
-      var on = nav === 'daily' ? DAILY.indexOf(state.view) >= 0 : nav === state.view;
+      var on = nav === 'dashboard' ? DAILY.indexOf(state.view) >= 0 : nav === state.view;
       n.classList.toggle('active', on);
     });
     $$('[data-ico]').forEach(function (n) { if (!n.innerHTML) n.innerHTML = ICONS[n.dataset.ico] || ''; });
   }
 
   // ------------------------------------------------------------------ views
-  var DAILY = ['signals', 'automation', 'brands', 'match'];
+  var DAILY = ['dashboard', 'signals', 'automation', 'results', 'brands'];
 
   function dailyTabs(active) {
-    var labels = { automation: 'Automation', signals: 'Signals', brands: 'Brands', match: 'Match' };
+    var labels = { dashboard: 'Dashboard', signals: 'Signals', automation: 'Automation',
+                   results: 'Results', brands: 'Brands', match: 'Match' };
     return '<div class="toolbar" style="margin-bottom:14px">' +
       DAILY.map(function (v) {
         var on = v === active;
@@ -247,12 +269,30 @@
       }).join('') + '</div>';
   }
 
+  // The five steps, in the order the app is meant to be used. Every page keeps its own name.
+  var PIPELINE = [
+    { v: 'radar', n: 1, label: 'Research', hint: 'the offer' },
+    { v: 'leads', n: 2, label: 'Companies', hint: 'people + emails' },
+    { v: 'sequences', n: 3, label: 'Campaign', hint: 'the emails' },
+    { v: 'army', n: 4, label: 'Send', hint: 'the army' },
+    { v: 'inbox', n: 5, label: 'Replies', hint: 'and bookings' }
+  ];
+
+  function pipelineBar(view) {
+    return '<div class="pipeline">' + PIPELINE.map(function (s) {
+      return '<button class="pipe-step' + (s.v === view ? ' on' : '') + '" data-nav="' + s.v + '">' +
+        '<span class="pipe-n">' + s.n + '</span><span><b>' + s.label + '</b> ' +
+        '<span class="pipe-h">' + s.hint + '</span></span></button>';
+    }).join('') + '</div>';
+  }
+
   function render() {
     var d = state.data;
     if (!d) return;
     var view = $('#view');
     var html = '';
     if (state.view === 'dashboard') html = viewDashboard(d);
+    else if (state.view === 'results') html = viewResults(d);
     else if (state.view === 'leads') html = viewLeads(d);
     else if (state.view === 'domains') html = viewDomains(d);
     else if (state.view === 'osint') html = viewOsint(d);
@@ -263,6 +303,8 @@
     else if (state.view === 'brands') html = viewBrands(d);
     else if (state.view === 'offers') html = viewOffers(d);
     else if (state.view === 'match') html = viewMatch(d);
+    else if (state.view === 'radar') html = viewRadar(d);
+    else if (state.view === 'army') html = viewArmy(d);
     else if (state.view === 'mailboxes') html = viewMailboxes(d);
     else if (state.view === 'ads') html = viewAds(d);
     else if (state.view === 'agent') html = viewAgent(d);
@@ -280,16 +322,20 @@
       return;
     }
     if (DAILY.indexOf(state.view) >= 0) html = dailyTabs(state.view) + html;
+    if (PIPELINE.some(function (s) { return s.v === state.view; })) html = pipelineBar(state.view) + html;
     view.innerHTML = html;
     if (state.view === 'leads') wireLeads();
     if (state.view === 'domains') wireDomains();
+    if (state.view === 'leads') startLeadPoll();
     if (state.view === 'leads') wireLeads();
+    if (state.view === 'leads' && state.leads && state.leads.items && state.leads.items.length) wireLeadTable();
     if (state.view === 'settings') wireSettings();
     if (state.view === 'mailboxes') wireMailboxes();
     if (state.view === 'inbox') wireInbox();
     if (state.view === 'sequences') wireSequences();
     if (state.view === 'ads') wireAds();
     if (state.view === 'agent') wireAgent();
+    if (state.view === 'results') wireResults();
   }
 
   function pageHead(title, sub, actions) {
@@ -305,9 +351,10 @@
     var onboarded = d.settings.onboarded;
     var checklist = [
       { done: d.mailboxes.length > 0, title: 'Connect a mailbox', hint: 'SMTP for sending, IMAP to catch replies.', go: 'mailboxes' },
-      { done: s.leads_total > 10, title: 'Import your leads', hint: 'CSV, TSV or Excel with an email column.', go: 'leads' },
-      { done: s.sequences > 0, title: 'Set up a sequence', hint: 'Two or three short emails beat one long one.', go: 'sequences' },
-      { done: s.sends_total > 0, title: 'Send your first batch', hint: 'Enroll leads, then let the queue pace them.', go: 'sequences' }
+      { done: s.offers > 0, title: 'Add the offer you sell', hint: 'Paste the website, Radar reads it and fills the buyer profile.', go: 'radar' },
+      { done: s.leads_total > 0, title: 'Have companies to work', hint: 'Import contacts, pull domains, or hunt them from Radar.', go: 'leads' },
+      { done: s.sequences > 0, title: 'Write the campaign', hint: 'Two or three short emails beat one long one.', go: 'sequences' },
+      { done: s.sends_total > 0, title: 'Send your first batch', hint: 'The Army paces them out of your own mailbox.', go: 'army' }
     ];
     var doneCount = checklist.filter(function (c) { return c.done; }).length;
 
@@ -316,12 +363,10 @@
       '<button class="btn" data-act="import">Import leads</button>' +
       '<button class="btn primary" data-act="tick">Send next now</button>');
 
-    html += chatCard(d);
-
-    if (!onboarded || doneCount < 4) {
+    if (!onboarded || doneCount < checklist.length) {
       html += '<div class="card" style="margin-bottom:14px"><div class="card-head"><h2>Get set up</h2>' +
-        '<div class="spacer"></div><span class="badge ' + (doneCount === 4 ? 'green' : 'blue') + '">' +
-        doneCount + ' of 4</span></div><div class="checklist">' +
+        '<div class="spacer"></div><span class="badge ' + (doneCount >= checklist.length ? 'green' : 'blue') + '">' +
+        doneCount + ' of ' + checklist.length + '</span></div><div class="checklist">' +
         checklist.map(function (c, i) {
           return '<div class="ci"><div class="mark ' + (c.done ? 'done' : '') + '">' + (c.done ? '✓' : (i + 1)) + '</div>' +
             '<div class="grow"><strong>' + h(c.title) + '</strong><div class="hint">' + h(c.hint) + '</div></div>' +
@@ -339,7 +384,7 @@
     var stages = ['new', 'contacted', 'replied', 'interested', 'won'];
     var maxStage = Math.max.apply(null, stages.map(function (k) { return s.by_status[k] || 0; }).concat([1]));
     html += '<div class="grid cols-2">';
-    html += '<div class="card"><div class="card-head"><h2>Pipeline</h2><div class="spacer"></div>' +
+    html += '<div class="card"><div class="card-head"><h2>Lead pipeline</h2><div class="spacer"></div>' +
       '<span class="badge grey">' + num(s.leads_total) + ' leads</span></div><div class="bars">' +
       stages.map(function (k) {
         var v = s.by_status[k] || 0;
@@ -376,13 +421,6 @@
       '<div class="small dim">Loading...</div></div></div>';
 
     setTimeout(loadEvents, 30);
-    setTimeout(function () {
-      renderChat();
-      var send = $('#chat-send');
-      if (send) send.onclick = sendChat;
-      var input = $('#chat-input');
-      if (input) input.onkeydown = function (e) { if (e.key === 'Enter') sendChat(); };
-    }, 30);
     setTimeout(wireDashboard, 0);
     return html;
   }
@@ -470,6 +508,55 @@
     };
   }
 
+  function leadCleanModal() {
+    var q = state.leads;
+    openModal({
+      title: 'Clean the list',
+      subtitle: num(q.dropped) + ' quarantined - kept whole, and they can be allowed back',
+      wide: true,
+      body: '<div class="small dim">Removes leads that can never start a conversation: a gmail, ' +
+        'yahoo or other private mailbox with no website or own domain behind it (a company ' +
+        'name, an industry, a job title or a city alone does not count - so a personal ' +
+        'address in a government or fishery import goes), an address that is not an address, ' +
+        'and rows with no email, company, site or phone at all. A gmail lead that names a ' +
+        'website stays. Removed leads are kept whole in a quarantine and can be allowed ' +
+        'back.</div>' +
+        '<div class="toolbar" style="margin:14px 0 0">' +
+        '<button class="btn sm" data-act="lead-clean" data-dry="1">Preview</button>' +
+        '<button class="btn sm primary" data-act="lead-clean" data-dry="0">Clean</button>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm ghost" data-act="lead-restore">Allow them back</button>' +
+        '</div><div data-live="leads_clean_all"></div>',
+      onMount: function () { paintJobLive(); }
+    });
+  }
+
+  function osmModal() {
+    var found = state.osm || {};
+    openModal({
+      title: 'Find local businesses (OpenStreetMap)',
+      subtitle: 'Free, no key, data ODbL',
+      wide: true,
+      body: '<div class="grid cols-3">' +
+        '<div class="field"><label>What to look for</label>' +
+        '<input id="osm-text" placeholder="roofers in Slovakia, dentists, Bratislava, yoga studio"></div>' +
+        '<div class="field"><label>Where (optional)</label>' +
+        '<input id="osm-area" placeholder="country, region or city"></div>' +
+        '<div class="field"><label>How many</label>' +
+        '<input type="number" id="osm-limit" value="200" min="5" max="1000"></div>' +
+        '</div>' +
+        '<div class="toolbar" style="margin-top:10px">' +
+        '<button class="btn primary" data-act="osm-search">Find businesses</button>' +
+        '<button class="btn" data-act="osm-import">Import the ones with a contact</button></div>' +
+        '<div id="osm-result" class="small dim mt">' +
+        (found.category ? osmSummary(found) : 'Any trade or business type works - an unknown ' +
+          'term is matched against the name/craft/shop tags, and the answer is cached.') +
+        '</div>' +
+        '<div class="small dim mt">Data &copy; OpenStreetMap contributors, ODbL. Emailing people ' +
+        'found this way is your GDPR call.</div>'
+    });
+  }
+
   function viewLeads(d) {
     var q = state.leads;
     var f = q.filters || {};
@@ -477,11 +564,15 @@
     var active = LEAD_FILTER_KEYS.filter(function (key) { return f[key]; }).length;
     var html = pageHead('Leads',
       '<span id="lead-total">' + num(q.total) + ' contacts in this workspace.</span>',
-      '<button class="btn" data-act="export">CSV</button>' +
-      '<button class="btn" data-act="export-parquet">Parquet</button>' +
-      '<button class="btn" data-act="export-duckdb">DuckDB</button>' +
+      '<button class="btn" data-act="lead-clean-open">Clean the list</button>' +
+      '<button class="btn" data-act="osm-open">Find businesses (OSM)</button>' +
+      '<button class="btn" data-act="export">Export CSV</button>' +
+      '<button class="btn" data-act="export-parquet">Export Parquet</button>' +
+      '<button class="btn" data-act="export-duckdb">Export DuckDB</button>' +
       '<button class="btn" data-act="bulk-data">Bulk data</button>' +
+      '<button class="btn" data-act="linkedin-data">LinkedIn data</button>' +
       '<button class="btn primary" data-act="add-lead">Add lead</button>');
+
 
     html += '<div class="card" id="contacts-import" style="margin-bottom:12px">' +
       '<div class="card-head"><h2>Import contacts</h2><div class="spacer"></div>' +
@@ -490,6 +581,7 @@
       '<div class="grow small dim">Drop a file anywhere on this page, or press Import contacts. ' +
       'Every row in the file is read; a run that stops continues from where it stopped.</div>' +
       '<button class="btn primary" data-act="import">Import contacts</button></div></div>';
+
 
     html += '<div class="card tight"><div class="toolbar" style="margin:0">' +
       '<div class="search grow"><span class="s-ico">' + ICONS.search + '</span>' +
@@ -511,7 +603,8 @@
       '<button class="btn sm" data-act="verify">Verify emails</button>' +
       '</div>' + (q.showFilters ? leadFilterPanel(facets, f) : '') + '</div>';
 
-    html += '<div id="lead-table" class="mt"></div>';
+    html += '<div id="lead-table" class="mt">' +
+      ((state.leads.items && state.leads.items.length) ? leadsTableHtml() : '') + '</div>';
     return html;
   }
 
@@ -711,7 +804,7 @@
           '<label class="check"><input type="checkbox" class="job-en" data-key="' + h(j.key) + '"' +
           (j.enabled ? ' checked' : '') + '> enabled</label>' +
           '<button class="btn sm" data-run="' + h(j.key) + '"' + (j.running ? ' disabled' : '') + '>Run now</button>' +
-          '<button class="btn sm ghost" data-log="' + h(j.key) + '">Last log</button>' +
+          '<button class="btn sm ghost" data-log="' + h(j.key) + '">Results</button>' +
           '<div class="spacer" style="flex:1"></div>' +
           '<span class="small dim nowrap">' + (last.started_ts ?
             (last.status === 'ok' ? 'last ok ' : 'last failed ') + fmtWhen(last.started_ts) : 'never run') +
@@ -806,7 +899,6 @@
     var html = pageHead('Domains', num(q.total) +
       ' domains in the catalogue - pulled from open data, enriched with Common Crawl.',
       '<button class="btn" data-act="domain-sync">Import lead domains</button>' +
-      '<button class="btn" data-act="domain-enrich">Check Common Crawl</button>' +
       '<button class="btn" data-act="domain-refresh">Refresh</button>');
 
     html += '<div class="grid cols-4" style="margin-bottom:14px">' +
@@ -815,6 +907,96 @@
       kpi('With MX', num(s.with_mx), 'can receive mail', '') +
       kpi('New this week', num(s.new_week), num(s.leads) + ' domains have leads', 'amber') +
       '</div>';
+
+    var dns = s.dnsniffer || {};
+    var ll = s.live_list || {};
+    var llBadge = ll.exists
+      ? (num(ll.parts) + ' part' + (ll.parts === 1 ? '' : 's') + ', ' +
+         (ll.bytes / 1e9).toFixed(1) + ' GB')
+      : 'file missing';
+    html += '<div class="card" style="margin-bottom:14px" id="domain-bulk-card">' +
+      '<div class="card-head"><h2>Run on every domain</h2><div class="spacer"></div>' +
+      '<span class="small dim">seven passes over the whole list - each is a background job ' +
+      'you can cancel, and a domain with a contact becomes a lead</span></div>' +
+      '<div class="grid cols-3">' +
+      '<div class="card sv-ad-card" style="background:var(--panel-2)" id="domain-clean-card">' +
+      '<div class="card-head"><h3>Clean the catalogue</h3><div class="spacer"></div>' +
+      '<span class="badge grey">' + num(s.dropped) + ' quarantined</span></div>' +
+      '<div class="small dim" style="min-height:52px">Drops the rows that cannot become a ' +
+      'contact: phone numbers and addresses in the domain column, wildcards, IP addresses ' +
+      'and test names - and with DNS on, names that no longer exist.</div>' +
+      '<label class="check small"><input type="checkbox" id="clean-dns" checked> Check DNS ' +
+      'too (slower: drops names that no longer exist)</label>' +
+      '<div class="toolbar" style="margin:10px 0 0">' +
+      '<button class="btn sm" data-act="domain-clean" data-dry="1">Preview</button>' +
+      '<button class="btn sm primary" data-act="domain-clean" data-dry="0">Clean</button>' +
+      '<button class="btn sm ghost" data-act="domain-restore" title="Forget the quarantine, ' +
+      'so an import may add those domains again">Allow back</button></div>' +
+      '<div data-live="domains_clean_all"></div></div>' +
+      '<div class="card sv-ad-card" style="background:var(--panel-2)" id="domain-dns-card">' +
+      '<div class="card-head"><h3>DNSniffer: keep live websites</h3><div class="spacer"></div>' +
+      '<span class="badge ' + (dns.api_key ? 'green' : 'grey') + '" id="dns-badge">' +
+      (dns.api_key ? 'API key set' : 'keyless: MCP search') + '</span></div>' +
+      '<div class="small dim" style="min-height:52px">Asks the DNSniffer index of about 380 ' +
+      'million domains seen in zone files and Certificate Transparency about each one. A ' +
+      '"seen live" test, not an HTTP fetch. Without a key the free public search is used.</div>' +
+      '<label class="check small"><input type="checkbox" id="dns-cert"> Also require a ' +
+      'certificate (stricter)</label>' +
+      '<label class="check small"><input type="checkbox" id="dns-redo"> Re-check domains ' +
+      'already checked</label>' +
+      '<div class="row" style="margin-top:8px;gap:6px">' +
+      '<input type="password" id="dns-key" class="grow" placeholder="' +
+      (dns.api_key ? 'API key saved - paste a new one'
+                   : 'API key (optional, exact and faster)') + '">' +
+      '<button class="btn sm" data-act="dns-key-save">Save</button></div>' +
+      '<div class="toolbar" style="margin:10px 0 0">' +
+      '<button class="btn sm" data-act="domain-dns" data-dry="1">Preview</button>' +
+      '<button class="btn sm primary" data-act="domain-dns" data-dry="0">Clean</button></div>' +
+      '<div data-live="domains_dnsniffer_all"></div></div>' +
+      '<div class="card sv-ad-card" style="background:var(--panel-2)" id="domain-live-card">' +
+      '<div class="card-head"><h3>Live websites list</h3><div class="spacer"></div>' +
+      '<span class="badge ' + (ll.exists ? 'green' : 'grey') + '">' + h(llBadge) +
+      '</span></div>' +
+      '<div class="small dim" style="min-height:52px">The DNSniffer dataset you downloaded: ' +
+      'reads the ZIP once and keeps only the catalogue domains that appear in it. Exact, no ' +
+      'key, no quota - ten to fifteen minutes for the full export.</div>' +
+      '<div class="row" style="margin-top:8px;gap:6px">' +
+      '<input type="text" id="live-path" class="grow" value="' + h(ll.path || '') +
+      '" placeholder="C:\\...\\all_domains.zip"></div>' +
+      '<div class="row" style="margin-top:6px;gap:6px">' +
+      '<button class="btn sm" data-act="live-browse">Browse...</button>' +
+      '<label class="check small" style="margin-left:8px"><input type="checkbox" id="live-dry"> ' +
+      'Preview only (reads the whole file, removes nothing)</label></div>' +
+      '<div class="toolbar" style="margin:10px 0 0">' +
+      '<button class="btn sm primary" data-act="live-check">Check every domain</button></div>' +
+      '<div data-live="domains_live_list_all"></div></div>' +
+      '</div>' +
+      '<div class="small dim" style="margin-top:10px">These three only remove rows: what goes ' +
+      'goes to the quarantine (Allow back), the leads table is never touched, and a domain ' +
+      'that already has a lead is kept.</div>' +
+      '<div class="sep"></div>' +
+      '<div class="grid cols-4">' + [
+        ['domains_mx_all', 'Check MX',
+          'DNS only: can the domain receive mail at all? Unchecked and stale domains run ' +
+          'first, so pressing it again continues rather than repeating.'],
+        ['domains_cc_all', 'Common Crawl + contacts',
+          'Index lookup, then the homepage and contact/about page from the archive: ' +
+          'description, e-mail, phone and a link to the contact page.'],
+        ['domains_osm_all', 'OpenStreetMap',
+          'Backend lookup for the business behind each domain: name, category, address, ' +
+          'e-mail, phone and opening hours.'],
+        ['domains_scrape_all', 'Scrape sites',
+          'A normal crawler pass over the live site (robots.txt respected): contacts, name ' +
+          'and description.']
+      ].map(function (item) {
+        return '<div class="card sv-ad-card" style="background:var(--panel-2)">' +
+          '<div class="card-head"><h3>' + h(item[1]) + '</h3></div>' +
+          '<div class="small dim" style="min-height:56px">' + h(item[2]) + '</div>' +
+          '<div class="toolbar" style="margin:10px 0 0">' +
+          '<button class="btn sm primary" data-act="domain-bulk" data-key="' + h(item[0]) +
+          '">Run on all</button></div>' +
+          '<div data-live="' + h(item[0]) + '"></div></div>';
+      }).join('') + '</div></div>';
 
     html += '<div class="card"><div class="card-head"><h2>Pull from open data</h2>' +
       '<div class="spacer"></div><span class="small dim">streamed from Hugging Face - only new domains are stored</span></div>' +
@@ -831,25 +1013,6 @@
           '<a class="btn sm ghost" href="' + h(src.url) + '" target="_blank" rel="noopener">Open</a>' +
           '</div></div>';
       }).join('') + '</div></div>';
-
-    html += '<div class="card mt" id="osm-card"><div class="card-head"><h2>Find local businesses ' +
-      '(OpenStreetMap)</h2><div class="spacer"></div>' +
-      '<span class="small dim">free · no key · ODbL</span></div>' +
-      '<div class="grid cols-3">' +
-      '<div class="field"><label>What to look for</label>' +
-      '<input id="osm-text" placeholder="roofers in Slovakia · dentists, Bratislava · yoga studio"></div>' +
-      '<div class="field"><label>Where (optional)</label>' +
-      '<input id="osm-area" placeholder="country, region or city"></div>' +
-      '<div class="field"><label>How many</label>' +
-      '<input type="number" id="osm-limit" value="200" min="5" max="1000"></div>' +
-      '</div>' +
-      '<div class="toolbar" style="margin-top:10px">' +
-      '<button class="btn primary" data-act="osm-search">Find businesses</button>' +
-      '<button class="btn" data-act="osm-import">Import the ones with a contact</button></div>' +
-      '<div id="osm-result" class="small dim mt">Any trade or business type works - an unknown term ' +
-      'is matched against the name/craft/shop tags, and the answer is cached.</div>' +
-      '<div class="small dim mt">Data &copy; OpenStreetMap contributors, ODbL. Emailing people ' +
-      'found this way is your GDPR call.</div></div>';
 
     html += '<div class="card mt" id="profile-card"><div class="card-head"><h2>Identify a bare ' +
       'domain</h2><div class="spacer"></div><span class="small dim">title, description, emails, ' +
@@ -877,8 +1040,13 @@
         ? '<div class="table-wrap"><table><thead><tr><th>Domain</th><th>Source</th>' +
           '<th class="num">CC pages</th><th>Last crawl</th><th>MX</th><th class="num">Leads</th>' +
           '<th></th></tr></thead><tbody>' + q.items.map(function (dom) {
+            var ddata = dom.data || {};
+            var contactUrl = /^https?:/i.test(ddata.contact_url || '') ? ddata.contact_url : '';
+            var contactBit = (ddata.emails && ddata.emails.length) ? ddata.emails[0]
+              : (ddata.phone || (ddata.phones && ddata.phones[0]) || '');
             return '<tr><td><div class="t-email">' + h(dom.domain) + '</div>' +
-              '<div class="t-sub">' + h(dom.name || (dom.data && dom.data.title) || '') + '</div></td>' +
+              '<div class="t-sub">' + h(dom.name || ddata.title || '') + '</div>' +
+              (contactBit ? '<div class="t-sub mono">' + h(contactBit) + '</div>' : '') + '</td>' +
               '<td>' + (dom.source ? '<span class="badge grey">' + h(dom.source) + '</span>' : '—') + '</td>' +
               '<td class="num">' + (dom.cc_pages ? num(dom.cc_pages) : '—') + '</td>' +
               '<td class="small dim nowrap">' + (dom.cc_last_crawl ? ccDate(dom.cc_last_crawl) : '—') + '</td>' +
@@ -888,6 +1056,8 @@
                 : '—') + '</td>' +
               '<td class="num">' + (dom.leads ? num(dom.leads) : '—') + '</td>' +
               '<td class="right nowrap">' +
+              (contactUrl ? '<a class="btn sm ghost" href="' + h(contactUrl) +
+                '" target="_blank" rel="noopener">Contact page</a>' : '') +
               '<button class="btn sm ghost" data-act="domain-enrich" data-domain="' + h(dom.domain) + '">Check</button>' +
               '<button class="btn sm" data-act="domain-scrape" data-domain="' + h(dom.domain) + '">Scrape</button>' +
               '</td></tr>';
@@ -929,6 +1099,10 @@
         loadDomains();
       };
     });
+    if (DOM_TIMER) { clearInterval(DOM_TIMER); DOM_TIMER = null; }
+    state.domainRunning = state.domainRunning || [];
+    pollDomainJobs();
+    DOM_TIMER = setInterval(pollDomainJobs, 2500);
   }
 
   function scrapeModal(result) {
@@ -1131,6 +1305,7 @@
     var imap = boxes.filter(function (b) { return b.imap_host; }).length;
     var html = pageHead('Inbox', 'One inbox for every mailbox. Replies and bounces are collected from ' +
       'all of them, matched to the lead, and the sequence stops.',
+      '<button class="btn ghost" data-ra="sort-replies-inbox">Sort replies</button>' +
       '<button class="btn" data-act="sync">Check all mailboxes</button>');
     if (!boxes.length) {
       html += '<div class="callout"><strong>No mailbox yet.</strong> Add one in <em>Mailboxes</em> — ' +
@@ -1145,7 +1320,7 @@
   }
 
   function loadInbox(mailboxId) {
-    call('/api/inbox?limit=200' + (mailboxId ? '&mailbox_id=' + mailboxId : '')).then(function (res) {
+    call('/api/inbox?limit=200' + (mailboxId ? '&mailbox_id=' + mailboxId : '') + (RA.inboxClass ? '&class=' + RA.inboxClass : '')).then(function (res) {
       var card = $('#inbox-card');
       if (!card) return;
       if (!res.ok) { card.innerHTML = '<div class="small dim">' + h(res.error) + '</div>'; return; }
@@ -1157,6 +1332,10 @@
           return '<option value="' + b.id + '"' + (Number(mailboxId) === b.id ? ' selected' : '') +
             '>' + h(b.name) + (b.unread ? ' · ' + b.unread + ' new' : '') +
             ' (' + num(b.total) + ')</option>';
+        }).join('') + '</select> <select id="inbox-class" style="max-width:190px"><option value="">All kinds</option>' +
+        ['positive', 'not_now', 'reply', 'auto_reply', 'unsub', 'bounce', 'unsorted'].map(function (k) {
+          var n = (res.classes || {})[k] || 0;
+          return '<option value="' + k + '"' + (RA.inboxClass === k ? ' selected' : '') + '>' + k.replace('_', ' ') + ' (' + n + ')</option>';
         }).join('') + '</select></div>' +
         (res.orphans ? '<div class="small dim">' + num(res.orphans) +
           ' replies came from a mailbox that has since been removed.</div>' : '');
@@ -1170,12 +1349,12 @@
             h((r.from_email || '?').slice(0, 2).toUpperCase()) + '</div>' +
             '<div class="grow"><div><strong>' + h(r.subject || '(no subject)') + '</strong> ' +
             (r.seen ? '' : '<span class="badge blue">new</span> ') +
-            (r.is_bounce ? '<span class="badge red">bounce</span>' : '<span class="badge green">reply</span>') +
+            replyClassBadge(r) +
             (r.mailbox_name ? ' <span class="badge grey">' + h(r.mailbox_name) + '</span>' : '') +
             '</div><div class="t-sub">' + h(r.from_email) + (r.company ? ' · ' + h(r.company) : '') +
             ' · ' + fmtWhen(r.received_ts) + '</div>' +
             (r.snippet ? '<div class="small muted" style="margin-top:4px">' + h(r.snippet) + '</div>' : '') +
-            '</div><div class="nowrap">' +
+            '</div><div class="nowrap">' + replyClassSelect(r) + ' ' +
             (r.seen ? '' : '<button class="btn sm ghost" data-seen="' + r.id + '">Mark read</button>') +
             '</div></div>';
         }).join('') + '</div>';
@@ -1191,6 +1370,8 @@
       if (select) {
         select.onchange = function () { loadInbox(Number(select.value) || 0); };
       }
+      var csel = $('#inbox-class');
+      if (csel) csel.onchange = function () { RA.inboxClass = csel.value; loadInbox(Number(($('#inbox-box') || {}).value || 0)); };
     });
   }
 
@@ -1254,24 +1435,113 @@
             '<label class="check"><input type="checkbox" class="job-en" data-key="' + h(j.key) + '"' +
             (j.enabled ? ' checked' : '') + '> enabled</label>' +
             '<button class="btn sm" data-run="' + h(j.key) + '"' + (j.running ? ' disabled' : '') + '>Run now</button>' +
-            '<button class="btn sm ghost" data-log="' + h(j.key) + '">Last log</button>' +
+            '<button class="btn sm ghost" data-log="' + h(j.key) + '">Results</button>' +
             '<div class="spacer" style="flex:1"></div>' +
             '<span class="small dim nowrap">' + (last.started_ts ?
               (last.status === 'ok' ? 'last ok ' : 'last failed ') + fmtWhen(last.started_ts) : 'never run') +
-            (j.next_run_ts ? ' · next ' + fmtWhen(j.next_run_ts) : ' · manual') + '</span></div></div>';
+            (j.next_run_ts ? ' · next ' + fmtWhen(j.next_run_ts) : ' · manual') + '</span></div>' +
+            '<div class="joblive" data-live="' + h(j.key) + '"></div></div>';
         });
       });
       box.innerHTML = html || '<div class="empty"><div class="big">No jobs registered</div></div>';
       wireAutomation();
+      paintJobLive();
+      pollAutomation();
     });
+  }
+
+  var AUTO_TIMER = null;
+  var DOM_TIMER = null;
+  var LEAD_TIMER = null;
+      var BOX_TIMER = null;
+
+      function pollBoxJobs() {
+        if (state.view !== 'mailboxes') {
+          if (BOX_TIMER) { clearInterval(BOX_TIMER); BOX_TIMER = null; }
+          return;
+        }
+        call('/api/jobs/live', {}).then(function (r) {
+          var live = (r && r.running) || [];
+          var before = (state.boxRunning || []).map(function (j) { return j.key; }).join(',');
+          var now = live.map(function (j) { return j.key; }).join(',');
+          state.running = live;
+          state.boxRunning = live;
+          paintJobLive();
+          if (before !== now && /mailboxes_/.test(before + ',' + now)) refresh();
+        });
+      }
+
+  function pollDomainJobs() {
+    if (state.view !== 'domains') return;
+    call('/api/jobs/live', {}).then(function (r) {
+      var live = (r && r.running) || [];
+      var now = live.map(function (j) { return j.key; }).join(',');
+      var before = (state.domainRunning || []).map(function (j) { return j.key; }).join(',');
+      state.running = live;
+      state.domainRunning = live;
+      paintJobLive();
+      if (before !== now && /domains_/.test(before + ',' + now)) {
+        loadDomains();
+      }
+    });
+  }
+
+  function startLeadPoll() {
+    if (LEAD_TIMER) clearInterval(LEAD_TIMER);
+    pollLeadJobs();
+    LEAD_TIMER = setInterval(pollLeadJobs, 2500);
+  }
+
+  function pollLeadJobs() {
+    if (state.view !== 'leads') {
+      if (LEAD_TIMER) { clearInterval(LEAD_TIMER); LEAD_TIMER = null; }
+      return;
+    }
+    call('/api/jobs/live', {}).then(function (r) {
+      var live = (r && r.running) || [];
+      var now = live.map(function (j) { return j.key; }).join(',');
+      var before = (state.leadRunning || []).map(function (j) { return j.key; }).join(',');
+      state.running = live;
+      state.leadRunning = live;
+      paintJobLive();
+      if (before !== now && /leads_clean_all/.test(before + ',' + now)) {
+        loadLeads();
+      }
+    });
+  }
+
+  function paintJobLive() {
+    var live = state.running || [];
+    var byKey = {};
+    live.forEach(function (j) { byKey[j.key] = j; });
+    $$('[data-live]').forEach(function (slot) {
+      var j = byKey[slot.dataset.live];
+      slot.innerHTML = j ? runningBar(j, true) : '';
+      if (j) wireCancel(slot);
+    });
+  }
+
+  function pollAutomation() {
+    if (AUTO_TIMER) clearInterval(AUTO_TIMER);
+    AUTO_TIMER = setInterval(function () {
+      if (state.view !== 'automation') { clearInterval(AUTO_TIMER); AUTO_TIMER = null; return; }
+      call('/api/jobs/live', {}).then(function (r) {
+        var live = (r && r.running) || [];
+        var was = (state.running || []).map(function (x) { return x.key; }).join(',');
+        state.running = live;
+        paintJobLive();
+        // a job that just stopped changes its badge and its last-run line
+        if (live.map(function (x) { return x.key; }).join(',') !== was) loadJobs();
+      });
+    }, 2000);
   }
 
   function wireAutomation() {
     $$('[data-run]').forEach(function (b) {
       b.onclick = function () {
         b.disabled = true; b.innerHTML = '<span class="spin"></span> running';
-        call('/api/jobs/run', { key: b.dataset.run }).then(function (r) {
-          if (r.ok) toast('Done: ' + JSON.stringify(r.summary || {}).slice(0, 160));
+        call('/api/jobs/run', { key: b.dataset.run, async: true }).then(function (r) {
+          if (r.ok) toast('Started - watch it in Results');
           else toast((r.error || r.status || 'Failed'), 'err');
           loadJobs(); refresh();
         });
@@ -1294,20 +1564,233 @@
       };
     });
     $$('[data-log]').forEach(function (b) {
+      b.onclick = function () { openJobResults(b.dataset.log); };
+    });
+  }
+
+  // ---- a running job: phase, bar, elapsed, cancel
+  function runningBar(j, compact) {
+    var pct = j.percent || 0;
+    var bits = [];
+    if (j.phase) bits.push(h(j.phase));
+    if (j.total) bits.push(num(Math.round(j.done)) + ' / ' + num(Math.round(j.total)));
+    if (j.eta) bits.push(fmtEta(j.eta) + ' left');
+    bits.push(fmtEta(j.elapsed) + ' elapsed');
+    return '<div class="jobrun' + (compact ? ' compact' : '') + '">' +
+      '<div class="progress"><div class="fill" style="width:' +
+      (pct ? Math.max(2, pct) + '%' : '100%') +
+      (pct ? '' : ';opacity:.35') + '"></div></div>' +
+      '<div class="row small" style="margin-top:4px;align-items:center">' +
+      '<span class="grow dim">' + (pct ? pct + '% · ' : '') + bits.join(' · ') + '</span>' +
+      (j.cancel
+        ? '<span class="dim small">stopping...</span>'
+        : '<button class="btn sm" data-cancel="' + h(j.key) + '">Cancel</button>') +
+      '</div></div>';
+  }
+
+  function wireCancel(scope) {
+    $$('[data-cancel]', scope).forEach(function (b) {
       b.onclick = function () {
-        call('/api/jobs/runs?limit=1&key=' + encodeURIComponent(b.dataset.log)).then(function (r) {
-          var run = (r.runs || [])[0];
-          openModal({
-            wide: true, title: 'Last run: ' + b.dataset.log,
-            body: run ? ('<div class="small dim" style="margin-bottom:8px">' + h(run.status) + ' · ' +
-              fmtWhen(run.started_ts) + ' · ' + h(run.summary || '') + '</div>' +
-              '<pre class="mono small" style="white-space:pre-wrap;max-height:50vh;overflow:auto">' +
-              h(run.log || '(no log)') + '</pre>')
-              : '<div class="small dim">This job has not run yet.</div>',
-            footer: '<button class="btn" data-close>Close</button>'
-          });
+        var key = b.dataset.cancel;
+        if (!confirm('Stop ' + key + '? It stops at its next checkpoint; work already ' +
+                     'committed is kept.')) return;
+        b.disabled = true; b.textContent = 'Stopping...';
+        call('/api/jobs/cancel', { key: key }).then(function (r) {
+          if (!r.ok) { b.disabled = false; b.textContent = 'Cancel'; toast(r.error, 'err'); }
+          else toast(r.note || 'Stopping...');
         });
       };
+    });
+  }
+
+  // ---- Results: every recent run and the files it wrote
+  function viewResults(d) {
+    var runs = state.runs;
+    var head = pageHead('Results',
+      'What the jobs actually produced - the files, their row counts, and the rows themselves. ' +
+      'Open one instead of reading a log.',
+      '<button class="btn" data-act="results-refresh">Refresh</button>');
+    if (!runs) return head + '<div class="small dim">Loading...</div>';
+    var live = state.running || [];
+    var liveHtml = '';
+    if (live.length) {
+      liveHtml = '<div class="card" style="margin-bottom:16px">' +
+        '<div class="row" style="align-items:center"><strong>Running now</strong>' +
+        '<span class="grow"></span><span class="small dim">' + live.length +
+        ' job' + (live.length > 1 ? 's' : '') + ' · refreshing</span></div>' +
+        live.map(function (j) {
+          return '<div style="margin-top:10px">' +
+            '<div class="row small"><span class="grow"><strong>' + h(j.name || j.key) +
+            '</strong> <span class="dim">' + h(j.key) + '</span></span></div>' +
+            runningBar(j) +
+            '<pre class="imp-log" style="max-height:150px;margin-top:6px">' +
+            h((j.lines || []).slice(-12).join('\n') || '(no output yet)') + '</pre></div>';
+        }).join('') + '</div>';
+    }
+    if (!runs.length) return head + liveHtml +
+      '<div class="callout small">No job has finished yet.</div>';
+    return head + liveHtml + '<table class="table small"><thead><tr><th>Job</th><th>When</th>' +
+      '<th>Status</th><th>What it did</th><th>Files</th><th></th></tr></thead><tbody>' +
+      runs.map(function (r) {
+        var counts = Object.keys(r.counts || {}).slice(0, 4).map(function (k) {
+          return h(k) + ' ' + num(r.counts[k]);
+        }).join(' · ');
+        var files = (r.files || []).length;
+        var rows = (r.files || []).reduce(function (a, f) { return a + (f.rows || 0); }, 0);
+        return '<tr>' +
+          '<td>' + h(r.key) + '</td>' +
+          '<td class="dim">' + fmtWhen(r.finished_ts || r.started_ts) + '</td>' +
+          '<td>' + (r.status === 'ok'
+            ? '<span style="color:var(--green,#4ade80)">ok</span>'
+            : '<span style="color:var(--red,#f87171)">' + h(r.status || '?') + '</span>') + '</td>' +
+          '<td class="dim">' + (counts || (r.error ? h(String(r.error).slice(0, 80)) : '-')) + '</td>' +
+          '<td>' + (files ? files + ' file' + (files > 1 ? 's' : '') +
+                    (rows ? ' · ' + num(rows) + ' rows' : '') : '<span class="dim">-</span>') + '</td>' +
+          '<td style="text-align:right"><button class="btn sm" data-jobres="' + h(r.key) +
+          '">Open</button></td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  function wireResults() {
+    wireCancel();
+    $$('[data-jobres]').forEach(function (b) {
+      b.onclick = function () { openJobResults(b.dataset.jobres); };
+    });
+    var refresh = $('[data-act="results-refresh"]');
+    if (refresh) {
+      refresh.onclick = function () {
+        state.runs = null; render();
+        loadRuns().then(function () { render(); });
+      };
+    }
+  }
+
+  function loadRuns() {
+    return call('/api/job/results/recent?limit=25').then(function (r) {
+      state.runs = (r && r.runs) || [];
+      state.running = (r && r.running) || [];
+      return state.runs;
+    });
+  }
+
+  var RESULTS_TIMER = null;
+
+  function pollResults() {
+    if (RESULTS_TIMER) clearInterval(RESULTS_TIMER);
+    RESULTS_TIMER = setInterval(function () {
+      if (state.view !== 'results') { clearInterval(RESULTS_TIMER); RESULTS_TIMER = null; return; }
+      call('/api/jobs/live', {}).then(function (r) {
+        var live = (r && r.running) || [];
+        var was = (state.running || []).length;
+        state.running = live;
+        // a job finishing means there is a new result to list
+        if (live.length !== was) { loadRuns().then(function () { render(); }); }
+        else if (live.length) { render(); }
+      });
+    }, 2000);
+  }
+
+  // ---- what a job produced: the files, openable, not just a log
+  function openJobResults(key) {
+    openModal({
+      wide: true, title: 'Last run: ' + key,
+      body: '<div class="small dim" id="jr-head">Loading...</div>' +
+            '<div class="toolbar" style="margin:10px 0 6px">' +
+            '<button class="btn sm" id="jr-tab-results">Results</button>' +
+            '<button class="btn sm ghost" id="jr-tab-log">Log</button></div>' +
+            '<div id="jr-body"></div>',
+      footer: '<button class="btn" data-close>Close</button>'
+    });
+    var state = { data: null, tab: 'results' };
+
+    function head(d) {
+      if (d.note) return '<span class="dim">' + h(d.note) + '</span>';
+      var bits = [];
+      if (d.status) bits.push(d.status);
+      if (d.finished_ts) bits.push(fmtWhen(d.finished_ts));
+      var sum = d.summary || {};
+      Object.keys(sum).forEach(function (k) {
+        var v = sum[k];
+        if (v === null || v === '' || typeof v === 'object') return;
+        if (k === 'warnings' && !v) return;
+        bits.push(h(k) + ': ' + h(String(v)));
+      });
+      return bits.join(' · ');
+    }
+
+    function renderResults(d) {
+      var files = d.files || [];
+      if (!files.length) {
+        return '<div class="callout small">This run named no output files. ' +
+               'If it wrote one, have the job return its path in the summary.</div>';
+      }
+      return '<table class="table small"><thead><tr><th>File</th><th>Kind</th>' +
+        '<th style="text-align:right">Rows</th><th style="text-align:right">Size</th>' +
+        '<th></th></tr></thead><tbody>' +
+        files.map(function (f, i) {
+          return '<tr><td title="' + h(f.path) + '">' + h(f.name) + '</td>' +
+            '<td class="dim">' + h(f.kind || '') + '</td>' +
+            '<td style="text-align:right">' + (f.rows == null ? '-' : num(f.rows)) + '</td>' +
+            '<td style="text-align:right">' + (f.size_mb || 0) + ' MB</td>' +
+            '<td style="text-align:right">' + (f.ok
+              ? '<button class="btn sm" data-prev="' + i + '">Open</button>'
+              : '<span class="dim small">' + h(f.error || '') + '</span>') + '</td></tr>';
+        }).join('') + '</tbody></table><div id="jr-prev" class="mt"></div>';
+    }
+
+    function wire() {
+      var body = $('#jr-body');
+      if (!body) return;
+      body.querySelectorAll('[data-prev]').forEach(function (btn) {
+        btn.onclick = function () {
+          var f = (state.data.files || [])[parseInt(btn.getAttribute('data-prev'), 10)];
+          if (!f) return;
+          var out = $('#jr-prev');
+          out.innerHTML = '<div class="small dim">Reading ' + h(f.name) + '...</div>';
+          call('/api/job/preview?path=' + encodeURIComponent(f.path) + '&limit=50')
+            .then(function (p) {
+              if (!p.ok) { out.innerHTML = '<div class="callout small">' + h(p.error) + '</div>'; return; }
+              var head2 = '<div class="small dim" style="margin:10px 0 6px">' + h(f.name) +
+                (p.total != null ? ' · ' + num(p.total) + ' rows' : '') +
+                (p.table ? ' · table ' + h(p.table) : '') + ' · first ' + p.rows.length + '</div>';
+              if (!p.cols.length) { out.innerHTML = head2 + '<div class="small dim">(empty)</div>'; return; }
+              out.innerHTML = head2 +
+                '<div style="overflow:auto;max-height:46vh"><table class="table small"><thead><tr>' +
+                p.cols.map(function (c) { return '<th>' + h(c) + '</th>'; }).join('') +
+                '</tr></thead><tbody>' +
+                p.rows.map(function (r) {
+                  return '<tr>' + r.map(function (c) {
+                    return '<td title="' + h(c) + '">' + h(String(c).slice(0, 80)) + '</td>';
+                  }).join('') + '</tr>';
+                }).join('') + '</tbody></table></div>';
+            });
+        };
+      });
+    }
+
+    function draw() {
+      var body = $('#jr-body');
+      if (!body || !state.data) return;
+      body.innerHTML = state.tab === 'log'
+        ? '<pre class="mono small" style="white-space:pre-wrap;max-height:52vh;overflow:auto">' +
+          h(state.data.log || '(no log)') + '</pre>'
+        : renderResults(state.data);
+      var rb = $('#jr-tab-results'), lb = $('#jr-tab-log');
+      if (rb && lb) {
+        rb.className = 'btn sm' + (state.tab === 'results' ? '' : ' ghost');
+        lb.className = 'btn sm' + (state.tab === 'log' ? '' : ' ghost');
+      }
+      if (state.tab === 'results') wire();
+    }
+
+    call('/api/job/results?key=' + encodeURIComponent(key)).then(function (d) {
+      state.data = d;
+      var hd = $('#jr-head');
+      if (hd) hd.innerHTML = head(d);
+      var rb = $('#jr-tab-results'), lb = $('#jr-tab-log');
+      if (rb) rb.onclick = function () { state.tab = 'results'; draw(); };
+      if (lb) lb.onclick = function () { state.tab = 'log'; draw(); };
+      draw();
     });
   }
 
@@ -1356,7 +1839,7 @@
         (state.dailyOnlyMatch ? ' checked' : '') + '> Only findings that match</label></div>' +
         '<div class="grow small dim">' + num(res.matching) + ' of ' + num(res.total) +
         ' findings fit ' + (offers.length ? 'your offers' : 'nothing yet') + '.' +
-        (offers.length ? '' : ' Add keywords to an offer in Toolbox so findings can be scored.') + '</div></div>';
+        (offers.length ? '' : ' Add keywords to an offer in Radar so findings can be scored.') + '</div></div>';
       var kinds = res.kinds || [];
       filter.innerHTML = '<div class="toolbar" style="margin:0"><span class="small dim">' +
         num(res.total) + ' findings · ' + num(res.unseen) + ' new</span>' +
@@ -1652,7 +2135,7 @@
       'and the HYROS API exposes it with the same key the Ad Tracking tab stores. Nothing on this ' +
       'page is generated locally.' +
       ((info.links && info.links.affiliate)
-        ? ' The Hyros Enterprise button opens the link from your Toolbox, which is an affiliate ' +
+        ? ' The Hyros Enterprise button opens the link from your Upgrades shelf, which is an affiliate ' +
           'link: we may earn a commission at no extra cost to you.' : '') + '</div>';
     html += '<div class="card"><div class="card-head"><h2>Connection</h2><div class="spacer"></div>' +
       '<span class="badge ' + (info.has_key ? 'green' : 'amber') + '">' +
@@ -1685,131 +2168,178 @@
 
   function wireAgent() { }
 
-  // ---- offers (the money layer)
+  // ---- upgrades: the affiliate tool shelf (read-only, hard-coded in engine/upgrades.py)
   function viewOffers(d) {
-    var auto = d.automation || {};
-    var locked = (d.settings || {}).offers_locked !== false;
-    var html = pageHead('Toolbox', 'The tools this app is built around - with the links we use.',
-      (locked ? '' : '<button class="btn" data-act="offer-import">Import JSON</button>' +
-        '<button class="btn" data-act="offer-pack">Load starter pack</button>' +
-        '<button class="btn primary" data-act="new-offer">New offer</button>'));
-    html += '<div class="callout"><strong>' + num(auto.offers_active || 0) +
-      ' recommended tools</strong> · pick the ones you need, sign up directly with the provider. ' +
+    var html = pageHead('Upgrades', 'Your own affiliate tools and links. This shelf is read-only.',
+      '');
+    html += '<div class="callout"><strong><span id="upgrade-count">' +
+      num(state.upgradesLoaded ? state.upgrades.length : 0) + '</span>' +
+      ' recommended tools</strong> - pick the ones you need, sign up directly with the provider. ' +
       'Some links are affiliate links: we may earn a commission at no extra cost to you. ' +
       'Lead Studio works without any of them.</div>';
     html += '<div id="offer-tabs" class="toolbar" style="margin-bottom:10px"></div>';
-    html += '<div id="offers-box"><div class="small dim">Loading offers...</div></div>';
-    setTimeout(loadOffers, 20);
+    html += '<div id="offers-box"><div class="small dim">Loading tools...</div></div>';
+    setTimeout(paintUpgradesFromShelf, 20);
     return html;
   }
 
-  function loadOffers() {
-    call('/api/offers').then(function (res) {
-      var box = $('#offers-box');
-      if (!box) return;
-      if (!res.ok) { box.innerHTML = '<div class="small dim">' + h(res.error) + '</div>'; return; }
-      state.offers = res.offers;
-      if (!res.offers.length) {
-        box.innerHTML = '<div class="card"><div class="empty"><div class="big">No offers yet</div>' +
-          '<p>Add the tools you resell - automated accounting, ads tracking, social media, ' +
-          'referrals - with your affiliate link and the keywords that identify a good fit. ' +
-          'The app then matches leads to them and drafts the email.</p>' +
-          '<button class="btn primary" data-act="new-offer">Add the first offer</button></div></div>';
-        return;
-      }
-      var locked = (state.data && state.data.settings && state.data.settings.offers_locked !== false);
-      box.innerHTML = '<div class="grid cols-2">' + res.offers.map(function (o) {
-        return '<div class="card" data-cat="' + h(o.category || 'other') + '"><div class="card-head"><div><h2>' + h(o.name) + '</h2>' +
-          '<div class="card-sub">' + h(o.category || 'other') +
-          (o.connections ? ' · ' + num(o.connections) + ' connection(s)' : '') + '</div></div>' +
-          '<div class="spacer"></div><span class="badge ' + (o.active ? 'green' : 'grey') + '">' +
-          (o.active ? 'active' : 'off') + '</span></div>' +
-          '<div class="small muted" style="min-height:34px">' + h((o.description || '').slice(0, 140)) + '</div>' +
-          '<div style="margin:10px 0 12px">' + (o.affiliate_url ?
-            '<a class="btn primary big" href="' + h(o.affiliate_url) + '" target="_blank" rel="noopener sponsored">Visit ' +
-            h(((o.affiliate_url.replace(/^https?:\/\//, '').split('/')[0]) || 'site').replace(/^www\./, '')) +
-            ' &rarr;</a>' :
-            '<span class="btn big" style="opacity:.45;cursor:default">No link yet</span>') + '</div>' +
-          '<div class="merge-chips">' + (o.keyword_list || []).slice(0, 6).map(function (k) {
-            return '<span class="chip">' + h(k) + '</span>';
-          }).join('') + '</div>' +
-          '<div class="toolbar mt" style="margin-bottom:0">' +
-          '<button class="btn sm" data-open-offer="' + o.id + '">Open</button>' +
-          '<button class="btn sm ghost" data-conns="' + o.id + '">Connect</button>' +
-          '<a class="btn sm ghost" href="/offer/' + o.id + '" target="_blank" rel="noopener">Details</a>' +
-          (locked ? '' :
-            '<button class="btn sm ghost" data-edit-offer="' + o.id + '">Edit</button>' +
-            '<button class="btn sm danger" data-del-offer="' + o.id + '">Delete</button>') +
-          '</div></div>';
-      }).join('') + '</div>';
+  function splitKeywords(value) {
+    return String(value || '').split(',').map(function (k) { return k.trim(); }).filter(Boolean);
+  }
 
-      drawOfferTabs();
-      $$('[data-edit-offer]').forEach(function (b) {
-        b.onclick = function () { offerEditor(Number(b.dataset.editOffer)); };
-      });
-      $$('[data-del-offer]').forEach(function (b) {
-        b.onclick = function () {
-          if (!confirm('Delete this offer and its connections?')) return;
-          call('/api/offer/delete', { id: Number(b.dataset.delOffer) }).then(function (r) {
-            if (r.ok) { toast('Offer deleted'); loadOffers(); refresh(); } else toast(r.error, 'err');
-          });
-        };
-      });
-      $$('[data-open-offer]').forEach(function (b) {
-        b.onclick = function () { offerWorkspace(Number(b.dataset.openOffer)); };
-      });
-      $$('[data-conns]').forEach(function (b) {
-        b.onclick = function () { offerConnections(Number(b.dataset.conns)); };
-      });
+  function paintUpgradesFromShelf() {
+    loadUpgrades().then(function (list) {
+      state.upgrades = list;
+      paintChrome();
+      if (state.view === 'offers') paintUpgrades();
+    });
+  }
+
+  function paintUpgrades() {
+    var box = $('#offers-box');
+    if (!box) return;
+    var list = state.upgrades || [];
+    var countEl = $('#upgrade-count');
+    if (countEl) countEl.textContent = num(list.length);
+    if (!list.length) {
+      box.innerHTML = '<div class="card"><div class="empty"><div class="big">No tools in the shelf</div>' +
+        '<p>The shelf is built into the app in <span class="mono">engine/upgrades.py</span>. ' +
+        'It is separate from the offers you manage in Radar.</p></div></div>';
+      return;
+    }
+    box.innerHTML = '<div class="grid cols-2">' + list.map(function (o) {
+      var host = ((o.url || '').replace(/^https?:\/\//, '').split('/')[0] || 'site').replace(/^www\./, '');
+      return '<div class="card" data-cat="' + h(o.category || 'other') + '"><div class="card-head"><div><h2>' + h(o.name) + '</h2>' +
+        '<div class="card-sub">' + h(o.category || 'other') + '</div></div>' +
+        '<div class="spacer"></div>' + (o.commission ?
+          '<span class="badge grey">' + h(o.commission) + '</span>' : '') + '</div>' +
+        '<div class="small muted" style="min-height:34px">' + h((o.description || '').slice(0, 140)) + '</div>' +
+        '<div style="margin:10px 0 12px">' + (o.url ?
+          '<a class="btn primary big" href="' + h(o.url) + '" target="_blank" rel="noopener sponsored">Visit ' +
+          h(host) + ' &rarr;</a>' :
+          '<span class="btn big" style="opacity:.45;cursor:default">No link yet</span>') + '</div>' +
+        '<div class="merge-chips">' + splitKeywords(o.keywords).slice(0, 6).map(function (k) {
+          return '<span class="chip">' + h(k) + '</span>';
+        }).join('') + '</div>' +
+        '<div class="toolbar mt" style="margin-bottom:0">' +
+        '<button class="btn sm" data-open-upgrade="' + o.id + '">What it does</button></div></div>';
+    }).join('') + '</div>';
+
+    drawOfferTabs();
+    $$('[data-open-upgrade]').forEach(function (b) {
+      b.onclick = function () { upgradeInfo(Number(b.dataset.openUpgrade)); };
+    });
+  }
+
+  function upgradeInfo(id) {
+    var o = (state.upgrades || []).filter(function (x) { return x.id === id; })[0];
+    if (!o) return;
+    openModal({
+      wide: true, title: 'Recommended tool',
+      body: '<div class="callout"><strong>' + h(o.name) + '</strong> - ' + h(o.category || 'other') +
+        (o.commission ? ' - ' + h(o.commission) : '') + '</div>' +
+        '<p class="small">' + h(o.description || 'No description in the pack.') + '</p>' +
+        '<div class="field"><label>Where to sign up</label>' +
+        (o.url ? '<a href="' + h(o.url) + '" target="_blank" rel="noopener sponsored">' + h(o.url) + '</a>' :
+          '<span class="dim">not set</span>') + '</div>' +
+        '<div class="merge-chips">' + splitKeywords(o.keywords).map(function (k) {
+          return '<span class="chip">' + h(k) + '</span>';
+        }).join('') + '</div>' +
+        '<div class="sep"></div><div class="small muted">This shelf is display-only and fixed in the app. ' +
+        'It has nothing to do with the offers you manage in Radar.</div>',
+      footer: '<button class="btn" data-close>Close</button>' +
+        (o.url ? '<a class="btn primary" href="' + h(o.url) + '" target="_blank" rel="noopener sponsored">Visit site &rarr;</a>' : '')
     });
   }
 
   function offerEditor(id) {
-    var o = (state.offers || []).filter(function (x) { return x.id === id; })[0] || {};
+    if (!id) return openOfferEditor(null);
+    call('/api/offers').then(function (res) {
+      var row = ((res && res.offers) || []).filter(function (x) {
+        return Number(x.id) === Number(id);
+      })[0];
+      if (!row) return toast('That offer no longer exists - pick another.', 'err');
+      openOfferEditor(row);
+    }).catch(function () { toast('Could not load the offer', 'err'); });
+  }
+
+  function openOfferEditor(o) {
+    o = o || {};
+    var id = o.id ? Number(o.id) : null;
     openModal({
       wide: true,
       title: id ? 'Edit offer' : 'New offer',
-      subtitle: 'The pitch can use {{first_name}}, {{company}}, {{offer_link}}, {{description}}.',
+      subtitle: 'What you sell. Radar uses these fields to analyse the offer and hunt companies that fit.',
       body: '<div class="row"><div class="field"><label>Offer name</label>' +
-        '<input type="text" id="of-name" value="' + h(o.name || '') + '" placeholder="Automated accounting"></div>' +
+        '<input type="text" id="of-name" value="' + h(o.name || '') + '" placeholder="Automated bookkeeping for clinics"></div>' +
         '<div class="field"><label>Category</label>' +
         '<input type="text" id="of-cat" value="' + h(o.category || '') + '" placeholder="accounting"></div></div>' +
-        '<div class="row"><div class="field"><label>Affiliate link</label>' +
-        '<input type="text" id="of-link" value="' + h(o.affiliate_url || '') + '" placeholder="https://partner.example.com/?ref=you"></div>' +
-        '<div class="field"><label>Commission</label>' +
-        '<input type="text" id="of-commission" value="' + h(o.commission || '') + '" placeholder="20% recurring"></div></div>' +
+        '<div class="field"><label>Your website or offer page (optional)</label>' +
+        '<div class="row" style="gap:8px;align-items:center"><input type="text" id="of-link" style="flex:1" value="' +
+        h(o.affiliate_url || '') + '" placeholder="https://your-company.com/the-offer">' +
+        '<button class="btn sm" type="button" id="of-read" title="Open this page and fill the fields below from it">' +
+        'Read the website</button></div>' +
+        '<div class="hint">Your own page. This is not an affiliate link and never appears on the Upgrades shelf.</div>' +
+        '<div class="hint small dim" id="of-read-status"></div></div>' +
+        '<div class="field"><label>What the customer gets</label>' +
+        '<textarea id="of-desc" rows="3" placeholder="Monthly bookkeeping, payroll and reporting for small clinics.">' + h(o.description || '') + '</textarea></div>' +
         '<div class="field"><label>Who it fits (comma separated keywords)</label>' +
-        '<input type="text" id="of-keywords" value="' + h(o.keywords || '') + '" placeholder="accounting, bookkeeping, payroll, finance">' +
-        '<div class="hint">Matched against each lead\'s industry, tags, company, title and notes.</div></div>' +
-        '<div class="field"><label>Description shown to the lead</label>' +
-        '<textarea id="of-desc" rows="2" placeholder="Automated bookkeeping and monthly reporting for small firms.">' + h(o.description || '') + '</textarea></div>' +
+        '<input type="text" id="of-keywords" value="' + h(o.keywords || '') + '" placeholder="dental, clinic, bookkeeping, payroll">' +
+        '<div class="hint">Matched against each lead\'s industry, tags, company, title and notes, and used by the Radar card.</div></div>' +
         '<div class="row"><div class="field"><label>Pitch subject</label>' +
         '<input type="text" id="of-subject" value="' + h(o.pitch_subject || '') + '" placeholder="{{first_name|Hi}} - a thought for {{company}}"></div></div>' +
         '<div class="field"><label>Pitch body</label>' +
-        '<textarea id="of-body" rows="7" placeholder="Hi {{first_name|there}}, ...">' + h(o.pitch_body || '') + '</textarea>' +
-        '<div class="hint">Leave empty to use the default template. The link is appended if you forget it, ' +
-        'and the affiliate disclosure is always appended below it.</div></div>' +
-        '<div class="field"><label>Affiliate disclosure (shown at the bottom of the offer page and every pitch)</label>' +
-        '<textarea id="of-disclosure" rows="4" placeholder="Leave empty for the standard FTC/EU wording">' +
-        h(o.disclosure || '') + '</textarea>' +
-        '<div class="hint">Use <span class="mono">{company}</span> for your company and ' +
-        '<span class="mono">{partner}</span> for the offer name. The default states that the commission is ' +
-        'at no additional cost to the customer.</div></div>',
+        '<textarea id="of-body" rows="6" placeholder="Hi {{first_name|there}}, ...">' + h(o.pitch_body || '') + '</textarea>' +
+        '<div class="hint">Merge fields: {{first_name}}, {{company}}, {{offer_link}}, {{offer_description}}.</div></div>',
       footer: '<button class="btn" data-close>Cancel</button>' +
         '<button class="btn primary" id="of-save">Save offer</button>',
       onMount: function (root) {
+        var readBtn = $('#of-read', root);
+        if (readBtn) readBtn.onclick = function () {
+          var url = ($('#of-link', root).value || '').trim();
+          if (!url) return toast('Paste the website first', 'err');
+          var label = readBtn.textContent;
+          readBtn.disabled = true; readBtn.textContent = 'Reading...';
+          call('/api/offer/read', { url: url }).then(function (r) {
+            readBtn.disabled = false; readBtn.textContent = label;
+            if (!r.ok) return toast(r.error || 'Could not read that page', 'err');
+            var f = r.fields || {};
+            var filled = [];
+            [['of-name', 'name'], ['of-cat', 'category'], ['of-desc', 'description'],
+             ['of-keywords', 'keywords']].forEach(function (pair) {
+              var el = $('#' + pair[0], root);
+              var value = String(f[pair[1]] || '').trim();
+              if (el && value && !el.value.trim()) { el.value = value; filled.push(pair[1]); }
+            });
+            var kept = ['name', 'category', 'description', 'keywords'].filter(function (key) {
+              return filled.indexOf(key) < 0 && String(f[key] || '').trim();
+            });
+            var status = $('#of-read-status', root);
+            if (status) status.textContent = (filled.length
+              ? 'Filled from the page: ' + filled.join(', ') + '.'
+              : 'Read ' + (r.url || url) + ' - every field already had text.') +
+              (kept.length ? ' Kept your own: ' + kept.join(', ') + '.' : '') +
+              (filled.length || kept.length ? ' Check it, then save.' : '');
+            toast(filled.length ? 'Filled ' + filled.length + ' field(s) from the page'
+                                : 'Read the page - your text was kept');
+          }).catch(function () {
+            readBtn.disabled = false; readBtn.textContent = label;
+            toast('Could not reach the app', 'err');
+          });
+        };
         $('#of-save', root).onclick = function () {
           var body = {
             id: id || null,
             name: $('#of-name', root).value, category: $('#of-cat', root).value,
-            affiliate_url: $('#of-link', root).value, commission: $('#of-commission', root).value,
+            affiliate_url: $('#of-link', root).value,
             keywords: $('#of-keywords', root).value, description: $('#of-desc', root).value,
-            pitch_subject: $('#of-subject', root).value, pitch_body: $('#of-body', root).value,
-            disclosure: $('#of-disclosure', root).value
+            pitch_subject: $('#of-subject', root).value, pitch_body: $('#of-body', root).value
           };
           call('/api/offer/save', body).then(function (r) {
             if (!r.ok) return toast(r.error, 'err');
-            toast('Offer saved'); closeModal(); loadOffers(); refresh();
+            toast('Offer saved'); closeModal();
+            if (r.id) { RA.offerId = Number(r.id); try { localStorage.setItem('ls-radar-offer', String(RA.offerId)); } catch (e) { /* private */ } }
+            if (state.view === 'radar') { radarLoad(true); } else { refresh(); }
           });
         };
       }
@@ -1855,7 +2385,7 @@
           h(r.ai_error) + ' Using the template instead.</div>' : '') +
           '<div class="field"><label>Subject</label><input type="text" id="pitch-subject" value="' + h(r.subject) + '"></div>' +
           '<div class="field"><label>Body</label><textarea id="pitch-body" rows="11">' + h(r.body) + '</textarea></div>' +
-          (r.link ? '<div class="small dim">Affiliate link: ' + h(r.link) + '</div>' : '');
+          (r.link ? '<div class="small dim">Offer link: ' + h(r.link) + '</div>' : '');
         openModal({
           wide: true,
           title: 'Pitch: ' + r.offer,
@@ -1918,7 +2448,7 @@
               label: $('#conn-label', root).value, value: $('#conn-value', root).value };
             call('/api/offer/connection/add', payload).then(function (r) {
               if (!r.ok) return toast(r.error, 'err');
-              toast('Connection saved'); offerConnections(id); loadOffers();
+              toast('Connection saved'); offerConnections(id);
             });
           };
         }
@@ -2149,6 +2679,11 @@
         call('/api/mcp/start', { name: name }).then(function (r) {
           button.disabled = false;
           if (!r.ok) return toast(r.error || 'Could not start the sign-in', 'err');
+          if (r.open) {                      // the server takes no token at all
+            toast(r.message || 'Connected - this server needs no sign-in', 'ok');
+            refresh();
+            return;
+          }
           window.open(r.url, '_blank');
           toast('Approve the sign-in in the browser tab');
           var tries = 0;
@@ -2228,7 +2763,7 @@
   function drawOfferTabs() {
     var box = $('#offer-tabs');
     if (!box) return;
-    var offers = state.offers || [];
+    var offers = state.upgrades || [];
     var cats = [];
     offers.forEach(function (o) {
       var c = o.category || 'other';
@@ -2252,35 +2787,6 @@
     });
     $$('[data-cat]').forEach(function (card) {
       card.style.display = (!state.offerCat || card.dataset.cat === state.offerCat) ? '' : 'none';
-    });
-  }
-
-  function offerWorkspace(id) {
-    var o = (state.offers || []).filter(function (x) { return x.id === id; })[0];
-    if (!o) return;
-    var locked = (state.data && state.data.settings && state.data.settings.offers_locked !== false);
-    var body = '<div class="callout"><strong>' + h(o.name) + '</strong> · ' +
-      h(o.category || 'other') + (o.commission ? ' · ' + h(o.commission) : '') + '</div>' +
-      '<p class="small">' + h(o.description || 'No description yet.') + '</p>' +
-      '<div class="field"><label>Where to sign up</label>' +
-      (o.affiliate_url ? '<a href="' + h(o.affiliate_url) + '" target="_blank" rel="noopener">' +
-        h(o.affiliate_url) + '</a>' : '<span class="dim">not set</span>') + '</div>' +
-      '<div class="merge-chips">' + (o.keyword_list || []).map(function (k) {
-        return '<span class="chip">' + h(k) + '</span>';
-      }).join('') + '</div>' +
-      '<div class="sep"></div><div class="small muted">' + h(o.disclosure ||
-        'Affiliate disclosure is shown on the details page and next to the link.') + '</div>';
-    openModal({
-      wide: true, title: 'Recommended tool', body: body,
-      footer: '<button class="btn" data-close>Close</button>' +
-        '<button class="btn" id="ow-conns">How to connect</button>' +
-        '<a class="btn" href="/offer/' + o.id + '" target="_blank" rel="noopener">Details</a>' +
-        (locked ? '' : '<button class="btn" id="ow-edit">Edit</button>') +
-        '<a class="btn primary" style="font-size:15px;padding:11px 22px;font-weight:700" href="' + h(o.affiliate_url || '#') + '" target="_blank" rel="noopener sponsored">Visit site &rarr;</a>',
-      onMount: function (root) {
-        $('#ow-conns', root).onclick = function () { offerConnections(o.id); };
-        if ($('#ow-edit', root)) $('#ow-edit', root).onclick = function () { offerEditor(o.id); };
-      }
     });
   }
 
@@ -2342,18 +2848,6 @@
       });
   }
 
-  // ---- dashboard chat (drives the app through tools)
-  function chatCard(d) {
-    var llmState = d.llm || {};
-    return '<div class="card" id="chat-card" style="margin-bottom:14px">' +
-      '<div class="card-head"><h2>Assistant</h2><div class="spacer"></div>' +
-      (llmState.configured ? '<span class="badge green">' + h(llmState.default) + '</span>'
-        : '<span class="badge amber">no LLM provider</span>') + '</div>' +
-      '<div id="chat-log" style="max-height:250px;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>' +
-      '<div class="row"><input type="text" id="chat-input" placeholder="e.g. find dental leads and show the best five">' +
-      '<button class="btn primary" id="chat-send" style="max-width:96px">Send</button></div></div>';
-  }
-
   function renderChat() {
     var log = $('#chat-log');
     if (!log) return;
@@ -2370,6 +2864,14 @@
         'border-radius:10px;padding:8px 11px"><div class="small">' + h(m.content).replace(/\n/g, '<br>') + '</div>' + body + '</div>';
     }).join('');
     log.scrollTop = log.scrollHeight;
+  }
+
+  function wireChat() {
+    renderChat();
+    var send = $('#chat-send');
+    if (send) send.onclick = sendChat;
+    var input = $('#chat-input');
+    if (input) input.onkeydown = function (e) { if (e.key === 'Enter') sendChat(); };
   }
 
   function sendChat() {
@@ -2486,7 +2988,7 @@
       var body = '<div class="toolbar" style="margin:0 0 10px"><span class="small dim">' +
         num(res.cases.length) + ' findings for ' + h(b.domain) + '</span>' +
         '<div class="spacer" style="flex:1"></div>' +
-        '<a class="btn sm" href="/brand/cases.csv?brand_id=' + id + '">Export CSV</a></div>';
+        '<a class="btn sm" href="/brand/cases.csv?brand_id=' + id + '&t=' + encodeURIComponent(TOKEN) + '">Export CSV</a></div>';
       if (!res.cases.length) {
         body += '<div class="empty" style="padding:24px"><div class="big">No copies found</div>' +
           '<p class="small">Nothing registered looks like this brand right now. Run the scan again ' +
@@ -2538,6 +3040,42 @@
   function viewMailboxes(d) {
     var html = pageHead('Mailboxes', 'Send from your own inbox - no third-party sender in the middle.',
       '<button class="btn primary" data-act="new-box">Add mailbox</button>');
+    html += '<div class="card" style="margin-bottom:14px" id="box-setup-card">' +
+      '<div class="card-head"><h2>Bulk setup from a senders sheet</h2><div class="spacer"></div>' +
+      '<span class="small dim">address, password, SMTP and IMAP in one CSV</span></div>' +
+      '<div class="small dim">A Manyreach export carries no passwords, so those mailboxes can ' +
+      'never sign in. This reads the provider sheet (email, password, smtp_host, smtp_port, ' +
+      'smtp_security, imap_host, imap_port, connect_now), fills the mailbox that already has ' +
+      'that address instead of duplicating it, and never blanks a saved password.</div>' +
+      '<div class="row" style="margin-top:12px;align-items:end;gap:10px">' +
+      '<div class="grow field"><label>Senders CSV on this computer</label>' +
+      '<input type="text" id="box-csv" placeholder="C:\\...\\SEZNAM_SENDERS.csv"></div>' +
+      '<button class="btn" data-act="box-csv-browse">Browse...</button>' +
+      '<button class="btn primary" data-act="box-csv-import">Import</button></div>' +
+      '<label class="check" style="margin-top:10px"><input type="checkbox" id="box-csv-all"> ' +
+      'Activate every row (leave off: only rows marked connect_now = yes go live, the rest ' +
+      'are imported paused as reserve)</label>' +
+      '<label class="check" style="margin-top:8px"><input type="checkbox" id="box-csv-eu" checked> ' +
+      'Also fill this password into every Seznam (.eu) mailbox that has none and turn them on ' +
+      '(one Seznam account holds aliases on many of the same domains)</label>' +
+      '<div id="box-csv-result" class="small dim" style="margin-top:8px"></div>' +
+      '<div class="sep"></div>' +
+      '<div class="row" style="align-items:end;gap:10px">' +
+      '<div class="grow field"><label>Only these domains (comma separated, blank = all)</label>' +
+      '<input type="text" id="box-scope" placeholder=".eu for every Seznam address, or efficientads.eu"></div>' +
+      '<button class="btn" data-act="box-test-all">Test every login</button>' +
+      '<button class="btn" data-act="box-send-all">Send a real test from each</button></div>' +
+      '<div class="small dim" style="margin-top:6px">Testing signs in over SMTP and IMAP and ' +
+      'stores the result on the mailbox card. Sending puts one short real message in each ' +
+      'inbox, spaced out; a blank destination sends it to the mailbox itself.</div>' +
+      '<div data-live="mailboxes_test_all"></div><div data-live="mailboxes_send_test"></div>' +
+      '<div class="sep"></div>' +
+      '<div class="row" style="align-items:end;gap:10px">' +
+      '<div class="grow field"><label>Provider DNS sheet (optional; blank checks the sender ' +
+      'domains themselves)</label>' +
+      '<input type="text" id="box-dns" placeholder="C:\\...\\SEZNAM_DNS_records.csv"></div>' +
+      '<button class="btn" data-act="box-dns-check">Check SPF / DKIM / DMARC</button></div>' +
+      '<div id="box-dns-result" class="small dim" style="margin-top:8px"></div></div>';
     if (!d.mailboxes.length) {
       html += '<div class="card"><div class="empty"><div class="big">No mailbox connected</div>' +
         '<p>You need an SMTP server to send and an IMAP server to read replies. Gmail, Outlook and most ' +
@@ -2553,6 +3091,11 @@
       html += '<div class="card"><div class="card-head"><div><h2>' + h(b.name) + '</h2>' +
         '<div class="card-sub">' + h(b.from_email) + '</div></div><div class="spacer"></div>' +
         '<span class="badge ' + (b.active ? 'green' : 'grey') + '">' + (b.active ? 'active' : 'paused') + '</span></div>' +
+        (b.last_test_ts ? '<div class="small" style="margin:6px 0 0;color:' +
+          (b.last_test_ok ? 'var(--green)' : 'var(--red)') + '">' +
+          (b.last_test_ok ? 'SMTP ok' : 'SMTP failed') +
+          (b.last_imap_ok ? ', IMAP ok' : (b.imap_host ? ', IMAP not confirmed' : '')) +
+          (b.last_test_detail ? ' - ' + h(b.last_test_detail) : '') + '</div>' : '') +
         '<div class="small muted">SMTP ' + h(b.smtp_host || '—') + ':' + h(b.smtp_port) + ' · ' + h(b.smtp_security) +
         '<br>IMAP ' + h(b.imap_host || 'not set') + (b.imap_host ? ':' + h(b.imap_port) : '') + '</div>' +
         '<div class="usage mt"><div class="small">today</div><div class="track"><div class="fill" ' +
@@ -2569,6 +3112,9 @@
   }
 
   function wireMailboxes() {
+    if (BOX_TIMER) clearInterval(BOX_TIMER);
+    pollBoxJobs();
+    BOX_TIMER = setInterval(pollBoxJobs, 2500);
 
     $$('[data-edit-box]').forEach(function (b) {
       b.onclick = function () { mailboxForm(Number(b.dataset.editBox)); };
@@ -2602,6 +3148,29 @@
     });
   }
 
+  function dnsTable(r) {
+    var rows = (r.domains || []).map(function (d) {
+      var badge = function (ok, text, state) {
+        return ok ? '<span class="badge green">' + h(text) + '</span>'
+                  : '<span class="badge ' + (state === 'amber' ? 'amber' : 'red') + '">' + h(text) + '</span>';
+      };
+      return '<tr><td class="mono">' + h(d.domain) + '</td>' +
+        '<td>' + badge(d.spf === 'ok', 'SPF ' + d.spf) + '</td>' +
+        '<td>' + badge(d.dkim_ok === 3, 'DKIM ' + d.dkim_ok + '/3', 'amber') + '</td>' +
+        '<td>' + badge(d.dmarc === 'ok', 'DMARC ' + d.dmarc) + '</td>' +
+        '<td class="small dim">' +
+        ((d.issues && d.issues.length) ? d.issues.map(h).join('<br>') : 'ok') +
+        ((d.leftovers && d.leftovers.length)
+          ? '<br><span style="color:var(--amber)">' + d.leftovers.map(h).join('<br>') + '</span>' : '') +
+        '</td></tr>';
+    }).join('');
+    return '<div class="small" style="margin-bottom:6px">' + num(r.passing) + ' of ' +
+      num(r.checked) + ' domains have SPF, all three DKIM CNAMEs and DMARC.</div>' +
+      '<div class="table-wrap"><table class="table small"><thead><tr><th>Domain</th><th>SPF</th>' +
+      '<th>DKIM</th><th>DMARC</th><th>Notes</th></tr></thead><tbody>' + rows +
+      '</tbody></table></div>';
+  }
+
   // ---- settings
   function viewSettings(d) {
     var s = d.settings, send = s.sending || {}, tr = s.tracking || {}, vf = s.verify || {};
@@ -2632,10 +3201,6 @@
       '<div class="field"><label>Contact email (sent in API user agents)</label>' +
       '<input type="text" id="set-contact" value="' + h(s.contact_email || '') + '" placeholder="you@company.com">' +
       '<div class="hint">Some public APIs ask automated clients to identify themselves. This is used only in the user agent.</div></div>' +
-      '<label class="check" style="margin-top:4px"><input type="checkbox" id="set-offers-locked"' +
-      (s.offers_locked !== false ? ' checked' : '') + '> Keep the Toolbox read-only</label>' +
-      '<div class="hint small dim" style="margin-top:4px">Leave this on for the build you hand out: the ' +
-      'recommended tools and their links stay exactly as shipped. Turn it off to edit your own copy.</div>' +
       '<div class="field"><label>Public address for tracking links</label>' +
       '<input type="text" id="set-track-base" value="' + h(tr.base_url) + '" placeholder="http://127.0.0.1:' + d.port + '">' +
       '<div class="hint">Leave as the local address for open tracking on this machine only. ' +
@@ -3091,6 +3656,7 @@
       });
     },
     'bulk-data': function () { bulkDataModal(); },
+    'linkedin-data': function () { linkedinModal(); },
     'lead-apply': function () { state.leads.page = 1; loadLeads(); },
     'lead-clear': function () {
       var q = state.leads;
@@ -3352,6 +3918,250 @@
         loadDomains();
       });
     },
+    'box-csv-browse': function (el) {
+      el.disabled = true;
+      call('/api/dialog/pick', { title: 'Choose the senders CSV', extensions: ['csv', 'txt'] })
+        .then(function (r) {
+          el.disabled = false;
+          if (!r.ok) return toast(r.error || 'Could not open the file dialog', 'err');
+          if (r.cancelled) return;
+          var picked = r.paths || (r.path ? [r.path] : []);
+          if (picked.length && $('#box-csv')) $('#box-csv').value = picked[0];
+        });
+    },
+    'box-csv-import': function (el) {
+      var path = (($('#box-csv') || {}).value || '').trim();
+      if (!path) return toast('Choose or paste the senders CSV first', 'err');
+      var all = !!($('#box-csv-all') && $('#box-csv-all').checked);
+      var eu = !!($('#box-csv-eu') && $('#box-csv-eu').checked);
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Importing...';
+      call('/api/mailbox/import', { path: path, activate: all ? 'all' : 'yes',
+          fill_suffix: eu ? '.eu' : '' }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        var box = $('#box-csv-result');
+        if (!r.ok) {
+          if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>';
+          return toast(r.error, 'err');
+        }
+        var line = num(r.created) + ' new, ' + num(r.updated) + ' updated, ' +
+          num(r.with_password) + ' with a password, ' + num(r.active) + ' active, ' +
+          num(r.paused) + ' paused, ' + num(r.skipped) + ' skipped';
+        if (r.filled) line += '; ' + num(r.filled) + ' .eu boxes given the password, ' +
+          num(r.activated) + ' turned on';
+        var detail = line + (r.errors && r.errors.length
+          ? '<br><span style="color:var(--amber)">' + r.errors.slice(0, 5).map(h).join('<br>') + '</span>' : '');
+        if (box) box.innerHTML = detail;
+        toast('Senders imported: ' + line);
+        refresh().then(function () {
+          var out = $('#box-csv-result');
+          if (out) out.innerHTML = detail;
+        });
+      });
+    },
+    'box-test-all': function (el) {
+      var domains = (($('#box-scope') || {}).value || '').trim();
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'mailboxes_test_all', async: true, params: { domains: domains } })
+        .then(function (r) {
+          el.disabled = false;
+          el.textContent = label;
+          if (!r.ok) return toast(r.error || 'Could not start the login test', 'err');
+          toast('Testing mailbox logins - the bar shows progress');
+          pollBoxJobs();
+        });
+    },
+    'box-send-all': function (el) {
+      var domains = (($('#box-scope') || {}).value || '').trim();
+      if (!confirm('Send one real test email from every active mailbox' +
+          (domains ? ' on ' + domains : '') + '? Each is sent to the mailbox itself.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'mailboxes_send_test', async: true, params: { domains: domains } })
+        .then(function (r) {
+          el.disabled = false;
+          el.textContent = label;
+          if (!r.ok) return toast(r.error || 'Could not start the send', 'err');
+          toast('Sending one test message per mailbox - the bar shows progress');
+          pollBoxJobs();
+        });
+    },
+    'box-dns-check': function (el) {
+      var path = (($('#box-dns') || {}).value || '').trim();
+      var label = el.textContent;
+      var box = $('#box-dns-result');
+      el.disabled = true;
+      el.textContent = 'Checking...';
+      if (box) box.innerHTML = '<div class="small dim">Reading DNS - a few seconds...</div>';
+      call('/api/mailbox/dns', { path: path }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) {
+          if (box) box.innerHTML = '<span style="color:var(--red)">' + h(r.error) + '</span>';
+          return toast(r.error, 'err');
+        }
+        if (box) box.innerHTML = dnsTable(r);
+        toast(num(r.passing) + ' of ' + num(r.checked) + ' domains are complete');
+      });
+    },
+    'domain-bulk': function (el) {
+      var key = el.dataset.key;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: key, async: true, params: { all: true } }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not start that pass', 'err');
+        toast('Started: ' + (r.name || key) + ' - the bar shows its progress');
+        pollDomainJobs();
+      });
+    },
+    'live-browse': function (el) {
+      el.disabled = true;
+      call('/api/dialog/pick', { title: 'Choose the live websites list',
+                                 extensions: ['zip', 'csv', 'txt'] })
+        .then(function (r) {
+          el.disabled = false;
+          if (!r.ok) return toast(r.error || 'Could not open the file dialog', 'err');
+          if (r.cancelled) return;
+          var picked = r.paths || (r.path ? [r.path] : []);
+          if (picked.length && $('#live-path')) $('#live-path').value = picked[0];
+        });
+    },
+    'live-check': function (el) {
+      var path = (($('#live-path') || {}).value || '').trim();
+      if (!path) return toast('Choose the live websites file first', 'err');
+      var dry = !!($('#live-dry') && $('#live-dry').checked);
+      if (!dry && !confirm('Read the whole live-websites list and quarantine every catalogue ' +
+          'domain it does not contain? Leads stay, a domain with a lead is kept, and removed ' +
+          'domains can be allowed back.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'domains_live_list_all', async: true,
+          params: { path: path, dry_run: dry } }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not start the check', 'err');
+        toast((dry ? 'Preview started' : 'Live-websites check started') +
+          ' - it reads the whole file, the bar shows its progress');
+        pollDomainJobs();
+      });
+    },
+    'domain-clean': function (el) {
+      var dry = el.dataset.dry === '1';
+      var dns = !!($('#clean-dns') && $('#clean-dns').checked);
+      if (!dry && !confirm('Remove every junk and dead domain from the catalogue? Leads ' +
+          'stay; removed domains are quarantined and can be allowed back.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'domains_clean_all', async: true,
+          params: { dry_run: dry, dns: dns } }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not start the clean-up', 'err');
+        toast((dry ? 'Preview started' : 'Clean-up started') +
+          ' - the bar shows its progress');
+        pollDomainJobs();
+      });
+    },
+    'dns-key-save': function (el) {
+      var input = $('#dns-key');
+      var value = ((input && input.value) || '').trim();
+      if (!value) return toast('Paste the DNSniffer API key first', 'err');
+      el.disabled = true;
+      el.textContent = 'Saving...';
+      call('/api/settings/save', { settings: { connectors: { dnsniffer_key: value } } })
+        .then(function (r) {
+          el.disabled = false;
+          el.textContent = 'Save key';
+          if (!r || r.ok === false) {
+            return toast((r && r.error) || 'Could not save the key', 'err');
+          }
+          if (input) input.value = '';
+          var badge = $('#dns-badge');
+          if (badge) {
+            badge.className = 'badge green';
+            badge.textContent = 'API key set';
+          }
+          toast('DNSniffer key saved - checks now use the exact lookup');
+        });
+    },
+    'domain-dns': function (el) {
+      var dry = el.dataset.dry === '1';
+      var cert = !!($('#dns-cert') && $('#dns-cert').checked);
+      var redo = !!($('#dns-redo') && $('#dns-redo').checked);
+      if (!dry && !confirm('Remove every domain DNSniffer does not list as a live ' +
+          'website? They go to the quarantine; leads stay, and a domain with a lead is ' +
+          'kept.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'domains_dnsniffer_all', async: true,
+          params: { all: true, dry_run: dry, require_cert: cert, refresh: redo } })
+        .then(function (r) {
+          el.disabled = false;
+          el.textContent = label;
+          if (!r.ok) return toast(r.error || 'Could not start the DNSniffer check', 'err');
+          toast((dry ? 'Preview started' : 'DNSniffer check started') +
+            ' - the bar shows its progress');
+          pollDomainJobs();
+        });
+    },
+    'domain-restore': function (el) {
+      if (!confirm('Allow every quarantined domain back into the catalogue? Imports can ' +
+          'then add them again; nothing is restored until an import runs.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Clearing...';
+      call('/api/domain/restore', {}).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not clear the quarantine', 'err');
+        toast('Quarantine cleared: ' + num(r.cleared) + ' domains may be imported again');
+        loadDomains();
+      });
+    },
+    'lead-clean-open': function () { leadCleanModal(); },
+    'osm-open': function () { osmModal(); },
+    'lead-clean': function (el) {
+      var dry = el.dataset.dry === '1';
+      if (!dry && !confirm('Remove every lead with no usable contact? They are kept in a ' +
+          'quarantine and can be allowed back.')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Starting...';
+      call('/api/jobs/run', { key: 'leads_clean_all', async: true,
+          params: { dry_run: dry } }).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not start the clean-up', 'err');
+        toast((dry ? 'Preview started' : 'Clean-up started') +
+          ' - the bar shows its progress');
+        startLeadPoll();
+      });
+    },
+    'lead-restore': function (el) {
+      if (!confirm('Put every quarantined lead back into the list?')) return;
+      var label = el.textContent;
+      el.disabled = true;
+      el.textContent = 'Restoring...';
+      call('/api/lead/restore', {}).then(function (r) {
+        el.disabled = false;
+        el.textContent = label;
+        if (!r.ok) return toast(r.error || 'Could not restore the leads', 'err');
+        toast('Restored ' + num(r.restored) + ' lead(s)' +
+          (r.skipped ? ' - ' + num(r.skipped) + ' kept in quarantine' : ''));
+        loadLeads();
+      });
+    },
     'add-scraped': function (el) {
       call('/api/lead/save', {
         email: el.dataset.email, domain: el.dataset.domain, source: 'crawl'
@@ -3362,9 +4172,9 @@
         toast('Lead added');
       });
     },
-    export: function () { window.location.href = '/export.csv'; },
-    'export-parquet': function () { window.location.href = '/export.parquet'; },
-    'export-duckdb': function () { window.location.href = '/export.duckdb'; },
+    export: function () { window.location.href = '/export.csv?t=' + encodeURIComponent(TOKEN); },
+    'export-parquet': function () { window.location.href = '/export.parquet?t=' + encodeURIComponent(TOKEN); },
+    'export-duckdb': function () { window.location.href = '/export.duckdb?t=' + encodeURIComponent(TOKEN); },
     'add-lead': function () { leadForm(null); },
     'new-sequence': function () { sequenceEditor(null); },
     'new-box': function () { mailboxForm(null); },
@@ -3456,32 +4266,6 @@
     'import-brands': importBrands,
     'new-offer': function () { offerEditor(null); },
     'run-match': runMatch,
-    'offer-pack': function () {
-      call('/api/offer/import', { pack: true }).then(function (r) {
-        if (!r.ok) return toast(r.error, 'err');
-        toast('Starter pack: ' + r.added + ' added, ' + r.skipped + ' already there');
-        loadOffers(); refresh();
-      });
-    },
-    'offer-import': function () {
-      openModal({
-        title: 'Import offers (JSON)',
-        subtitle: 'Paste an array of offers, or a {"offers": [...]} object.',
-        body: '<div class="field"><textarea id="oi-text" rows="12" placeholder=\'[{"name":"...","affiliate_url":"https://...","keywords":"accounting, payroll"}]\'></textarea>' +
-          '<div class="hint">Required: name. Everything else is optional. Duplicate names or links are skipped.</div></div>',
-        footer: '<button class="btn" data-close>Cancel</button>' +
-          '<button class="btn primary" id="oi-go">Import</button>',
-        onMount: function (root) {
-          $('#oi-go', root).onclick = function () {
-            call('/api/offer/import', { text: $('#oi-text', root).value }).then(function (r) {
-              if (!r.ok) return toast(r.error, 'err');
-              toast(r.added + ' added, ' + r.skipped + ' skipped');
-              closeModal(); loadOffers(); refresh();
-            });
-          };
-        }
-      });
-    },
     'llm-add': function () {
       var payload = {
         name: ($('#llm-name') || {}).value,
@@ -3665,6 +4449,7 @@
       (r.invalid ? num(r.invalid) + ' invalid addresses. ' : '') +
       (r.updated ? num(r.updated) + ' existing leads updated. ' : '') +
       (r.skipped_blank ? num(r.skipped_blank) + ' rows had nothing to identify them. ' : '') +
+      (r.not_business ? num(r.not_business) + ' skipped as not a business contact. ' : '') +
       (r.lead_domains ? num(r.lead_domains) + ' of their domains added to the catalogue. ' : '') +
       (r.stopped_at_limit ? 'Stopped at the row limit. ' : '') +
       '<div class="small dim" style="margin-top:6px">Mapped: ' +
@@ -3677,7 +4462,8 @@
     openModal({
       title: 'Import contacts',
       subtitle: 'CSV, TSV, JSON, Excel, Parquet, DuckDB or SQLite. An email is welcome but no longer ' +
-        'required: a company with a description is a contact too.',
+        'required: a company with a description is a contact too. Over 40 MB? Use ' +
+        '<b>File on this computer</b>, where there is no size limit.',
       body: '<div class="sv-tabs" style="margin-bottom:14px">' +
         '<button class="sv-tab on" data-imp-mode="upload">Upload a file</button>' +
         '<button class="sv-tab" data-imp-mode="path">File on this computer</button>' +
@@ -3706,16 +4492,31 @@
         'placeholder="best_email IS NOT NULL"></div>' +
         '<label class="check"><input type="checkbox" id="imp-only-email"> ' +
         'Only rows that have an email</label>' +
+        '<label class="check"><input type="checkbox" id="imp-business"> ' +
+        'Only business contacts</label>' +
       '<label class="check"><input type="checkbox" id="imp-restart"> ' +
       'Start this file from the beginning</label>' +
-        '<div class="toolbar" style="margin-top:12px">' +
-        '<button class="btn primary" id="imp-run">Import from this file</button></div>' +
+        '<div class="toolbar" style="margin-top:12px;flex-wrap:wrap;gap:8px">' +
+        '<button class="btn primary" id="imp-run">Import from this file</button>' +
+        '<button class="btn" id="imp-resume">Resume where it stopped</button>' +
+        '<button class="btn" id="imp-restart-btn">Restart from the beginning</button>' +
+        '<span class="small dim" id="imp-resume-info"></span></div>' +
         '</div>' +
+        '<div class="row mt" style="gap:14px;flex-wrap:wrap">' +
+        '<label class="small"><input type="checkbox" id="imp-delete-after"> ' +
+        'Delete each original file after it imports cleanly</label>' +
+        '<label class="small"><input type="checkbox" id="imp-show-log" checked> Show log</label>' +
+        '</div>' +
+        '<div id="imp-queue" class="mt"></div>' +
         '<div id="imp-result" class="mt"></div>' +
+        '<pre id="imp-log" class="imp-log mt hidden"></pre>' +
         '<div class="sep"></div><div class="small dim">Recognised columns: email, first name, ' +
         'last name, company, title, domain, website, description (the company description), ' +
         'phone, city, country, industry, linkedin, notes, tags, source. Duplicates are skipped, ' +
-        'and every row needs an email, a company, a domain or a name to identify it.</div>' +
+        'and every row needs an email, a company, a domain or a name to identify it. ' +
+        '<b>Only business contacts</b> skips a gmail, yahoo or other private mailbox with no ' +
+        'website and no own domain behind it, and rows that are nothing but a name - the same ' +
+        'rule as Clean the list.</div>' +
         '<label class="check mt"><input type="checkbox" id="imp-update"> ' +
         'Fill empty fields on existing leads</label>',
       footer: '<button class="btn" data-close>Done</button>',
@@ -3751,9 +4552,28 @@
         };
         input.onchange = function () { if (input.files.length) handleFile(input.files[0]); };
 
+        // A request body is read whole by the server (64 MB) and base64 makes it a third
+        // bigger. A larger file is imported from its path instead, which streams.
+        var UPLOAD_MAX_BYTES = 40 * 1024 * 1024;
+
         function handleFile(file) {
           var prog = $('#imp-progress', root), fill = $('#imp-fill', root);
           var box = $('#imp-upload-result', root);
+          if (file.size > UPLOAD_MAX_BYTES) {
+            if (prog) prog.classList.add('hidden');
+            if (box) {
+              box.innerHTML = '<div class="callout"><b>' + h(file.name) + '</b> is ' +
+                Math.round(file.size / 1048576) + ' MB. Copying a file through the page is ' +
+                'limited to 40 MB, but <b>File on this computer</b> has no size limit: choose ' +
+                'the file there and it is read where it lies, without copying it.</div>';
+            }
+            modeButtons.forEach(function (button) {
+              if (button.dataset.impMode === 'path' && button.onclick) button.onclick();
+            });
+            toast(file.name + ' is too large to copy through the page - choose it here instead',
+                  'err');
+            return;
+          }
           if (prog) prog.classList.remove('hidden');
           if (fill) fill.style.width = '20%';
           if (box) {
@@ -3772,7 +4592,8 @@
             startImport({
               name: file.name, b64: b64,
               update_existing: $('#imp-update', root).checked,
-              only_email: $('#imp-only-email', root).checked
+              only_email: $('#imp-only-email', root).checked,
+              business_only: $('#imp-business', root).checked
             }, root, 'imp-upload-result');
           };
           reader.readAsArrayBuffer(file);
@@ -3785,19 +4606,32 @@
           button.disabled = true;
           button.textContent = 'Opening...';
           call('/api/dialog/pick', {
-            title: 'Choose a file to import',
+            title: 'Choose one or more files to import',
+            multi: true,
             extensions: ['csv', 'tsv', 'txt', 'xlsx', 'xlsm', 'parquet', 'duckdb', 'ddb',
                          'db', 'sqlite', 'sqlite3']
           }).then(function (r) {
             button.disabled = false;
             button.textContent = label;
             if (!r.ok) return toast(r.error || 'Could not open the file dialog', 'err');
-            if (r.cancelled || !r.path) return;
-            $('#imp-path-input', root).value = r.path;
-            check();
+            if (r.cancelled) return;
+            var picked = r.paths || (r.path ? [r.path] : []);
+            if (!picked.length) return;
+            queue = picked.map(function (x) { return { path: x, state: 'waiting' }; });
+            $('#imp-path-input', root).value = picked[0];
+            renderQueue();
+            if (picked.length === 1) check();
+            else toast(picked.length + ' files queued - press Import to run them one by one');
           });
         };
-        $('#imp-check', root).onclick = function () { check(); };
+        $('#imp-check', root).onclick = function () { check(); showResumeState(); };
+        $('#imp-resume', root).onclick = function () { runOne({ restart: false }); };
+        $('#imp-restart-btn', root).onclick = function () {
+          if (!confirm('Start this file from row 1 again? Rows already imported are skipped as ' +
+                       'duplicates, but the whole file is read again.')) return;
+          runOne({ restart: true });
+        };
+        setTimeout(showResumeState, 200);
         $('#imp-run', root).onclick = function () { run(); };
 
         function check() {
@@ -3845,6 +4679,129 @@
 
         if (dropFile) setTimeout(function () { handleFile(dropFile); }, 60);
 
+        var queue = [];
+
+        function baseName(x) { return String(x || '').split(/[\\/]/).pop(); }
+
+        function renderQueue() {
+          var box = $('#imp-queue', root);
+          if (!box) return;
+          if (!queue.length) { box.innerHTML = ''; return; }
+          var icon = { waiting: '&middot;', running: '&rarr;', done: '&check;',
+                       failed: '&times;', deleted: '&check;' };
+          box.innerHTML = '<div class="small dim" style="margin-bottom:4px">' +
+            queue.length + ' file(s) queued</div>' +
+            queue.map(function (item, i) {
+              return '<div class="row small" style="gap:8px;align-items:center">' +
+                '<span style="width:14px;opacity:.7">' + (icon[item.state] || '&middot;') + '</span>' +
+                '<span class="grow' + (item.state === 'failed' ? '' : '') + '">' +
+                h(baseName(item.path)) + '</span>' +
+                '<span class="dim">' + h(item.note || item.state) + '</span>' +
+                (item.state === 'done'
+                  ? '<button class="btn small" data-del="' + i + '">Delete file</button>' : '') +
+                '</div>';
+            }).join('');
+          box.querySelectorAll('[data-del]').forEach(function (b) {
+            b.onclick = function () {
+              var item = queue[parseInt(b.getAttribute('data-del'), 10)];
+              if (!item) return;
+              if (!confirm('Delete ' + baseName(item.path) + ' from disk? This cannot be undone.')) return;
+              b.disabled = true; b.textContent = 'Deleting...';
+              call('/api/lead/file/delete', { path: item.path }).then(function (r) {
+                if (!r.ok) { b.disabled = false; b.textContent = 'Delete file';
+                             return toast(r.error || 'Could not delete it', 'err'); }
+                item.state = 'deleted'; item.note = 'deleted';
+                toast('Deleted ' + baseName(item.path));
+                renderQueue();
+              });
+            };
+          });
+        }
+
+        function logLines(lines) {
+          var el = $('#imp-log', root), show = $('#imp-show-log', root);
+          if (!el) return;
+          if (show && !show.checked) { el.classList.add('hidden'); return; }
+          if (!lines || !lines.length) return;
+          el.classList.remove('hidden');
+          var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          el.textContent = lines.join('\n');
+          if (atBottom) el.scrollTop = el.scrollHeight;
+        }
+
+        function runQueue(i) {
+          if (i >= queue.length) {
+            toast('All ' + queue.length + ' file(s) processed');
+            refresh(); loadLeads();
+            return;
+          }
+          var item = queue[i];
+          item.state = 'running'; item.note = 'importing'; renderQueue();
+          $('#imp-path-input', root).value = item.path;
+          startImport(bodyFor(item.path), root, null, function (ok, result) {
+            item.state = ok ? 'done' : 'failed';
+            item.note = ok ? (num(result.imported || 0) + ' imported' +
+                              ((result.deleted || []).length ? ', file deleted' : ''))
+                           : 'failed';
+            if (ok && (result.deleted || []).length) item.state = 'deleted';
+            renderQueue();
+            runQueue(i + 1);
+          });
+        }
+
+        function bodyFor(path, opts) {
+          function valueOf(id) { var el = $('#' + id, root); return el ? el.value : ''; }
+          function checkedOf(id) { var el = $('#' + id, root); return !!(el && el.checked); }
+          var body = {
+            path: path,
+            limit: 0,
+            where: valueOf('imp-where'),
+            restart: checkedOf('imp-restart'),
+            update_existing: checkedOf('imp-update'),
+            only_email: checkedOf('imp-only-email'),
+            business_only: checkedOf('imp-business'),
+            delete_after: checkedOf('imp-delete-after')
+          };
+          var select = $('#imp-table', root);
+          if (select && select.value) body.table = select.value;
+          if (opts) { for (var k in opts) { if (opts.hasOwnProperty(k)) body[k] = opts[k]; } }
+          return body;
+        }
+
+        function showResumeState() {
+          var info = $('#imp-resume-info', root);
+          var path = ($('#imp-path-input', root) || {}).value;
+          if (!info) return;
+          if (!path || !path.trim()) { info.textContent = ''; return; }
+          var select = $('#imp-table', root);
+          call('/api/lead/import/state', {
+            path: path.trim(),
+            table: select ? select.value : '',
+            where: (($('#imp-where', root) || {}).value || '')
+          }).then(function (r) {
+            if (!r.ok || !r.found || !r.offset_rows) {
+              info.textContent = 'no saved position - Import and Resume do the same thing';
+              return;
+            }
+            info.textContent = r.finished
+              ? 'this file finished at row ' + num(r.offset_rows) + ' - use Restart to redo it'
+              : 'stopped at row ' + num(r.offset_rows) + ' - Resume continues from there';
+          });
+        }
+
+        function runOne(overrides) {
+          var path = (($('#imp-path-input', root) || {}).value || '').trim();
+          if (!path) return toast('Paste the path to a file first', 'err');
+          queue = [{ path: path, state: 'running', note: 'importing' }];
+          renderQueue();
+          startImport(bodyFor(path, overrides), root, null, function (ok, result) {
+            queue[0].state = ok ? ((result.deleted || []).length ? 'deleted' : 'done') : 'failed';
+            queue[0].note = ok ? (num(result.imported || 0) + ' imported') : 'failed';
+            renderQueue();
+            showResumeState();
+          });
+        }
+
         function run() {
           var pathEl = $('#imp-path-input', root);
           var path = pathEl ? pathEl.value.trim() : '';
@@ -3857,17 +4814,29 @@
             where: valueOf('imp-where'),
             restart: checkedOf('imp-restart'),
             update_existing: checkedOf('imp-update'),
-            only_email: checkedOf('imp-only-email')
+            only_email: checkedOf('imp-only-email'),
+            business_only: checkedOf('imp-business')
           };
           var select = $('#imp-table', root);
           if (select) body.table = select.value;
           var box = $('#imp-result', root);
+          if (queue.length > 1) {
+            if (box) box.innerHTML = '<div class="small dim">Running ' + queue.length +
+              ' files one by one...</div>';
+            return runQueue(0);
+          }
+          queue = [{ path: path, state: 'running', note: 'importing' }];
+          renderQueue();
           if (box) box.innerHTML = '<div class="small dim">Starting the import of ' +
             h(path.split(/[\\/]/).pop()) + '...</div>';
-          startImport(body, root);
+          startImport(bodyFor(path), root, null, function (ok, result) {
+            queue[0].state = ok ? ((result.deleted || []).length ? 'deleted' : 'done') : 'failed';
+            queue[0].note = ok ? (num(result.imported || 0) + ' imported') : 'failed';
+            renderQueue();
+          });
         }
 
-        function startImport(body, scope, boxId) {
+        function startImport(body, scope, boxId, onDone) {
           var box = $('#' + (boxId || 'imp-result'), scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
           if (bar) bar.classList.remove('hidden');
           if (fill) fill.style.width = '2%';
@@ -3878,13 +4847,14 @@
                 box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
                   h(r.error || 'The import did not start') + '</div>';
               }
+              if (onDone) onDone(false, {});
               return;
             }
-            watchImport(r.import_id, scope, boxId);
+            watchImport(r.import_id, scope, boxId, onDone);
           });
         }
 
-        function watchImport(importId, scope, boxId) {
+        function watchImport(importId, scope, boxId, onDone) {
           var box = $('#' + (boxId || 'imp-result'), scope), bar = $('#imp-progress', scope), fill = $('#imp-fill', scope);
           if (bar) bar.classList.remove('hidden');
           var timer = setInterval(function () {
@@ -3892,8 +4862,10 @@
               if (!r.ok) {
                 clearInterval(timer);
                 if (box) box.innerHTML = '<div class="callout">' + h(r.error) + '</div>';
+                if (onDone) onDone(false, {});
                 return;
               }
+              logLines(r.lines);
               var percent = r.percent || 0;
               if (fill) fill.style.width = Math.max(2, percent) + '%';
               if (r.finished) {
@@ -3902,20 +4874,30 @@
                 if (r.error) {
                   box.innerHTML = '<div class="callout" style="border-left-color:var(--red)">' +
                     h(r.error) + '</div>';
+                  if (onDone) onDone(false, {});
                   return;
                 }
                 var result = r.result || {};
+                if (result.cancelled) {
+                  box.innerHTML = '<div class="callout"><strong>Import stopped.</strong> ' +
+                    'Rows already written were kept.</div>';
+                  if (onDone) onDone(false, result);
+                  return;
+                }
                 box.innerHTML = impCallout(result);
                 if (result.ok) {
-                  toast(num(result.imported || 0) + ' contacts imported');
-                  refresh();
-                  loadLeads();
+                  toast(num(result.imported || 0) + ' contacts imported' +
+                        ((result.deleted || []).length ? ' - original deleted' : ''));
+                  if (!onDone) { refresh(); loadLeads(); }
                 }
+                if (onDone) onDone(!!result.ok, result);
                 return;
               }
               var parts = [r.phase || 'working'];
               if (percent) parts.push(percent + '%');
-              if (r.rows) parts.push(num(r.rows) + ' rows');
+              if (r.read_rows) parts.push(num(r.read_rows) + ' read');
+              if (r.imported_rows) parts.push(num(r.imported_rows) + ' imported');
+              if (!r.read_rows && !r.imported_rows && r.rows) parts.push(num(r.rows) + ' rows');
               if (r.total > 1) {
                 parts.push(num(Math.round(r.done)) + ' / ' + num(Math.round(r.total)));
               }
@@ -3955,6 +4937,30 @@
     });
   }
 
+  // ---- leads.cm LinkedIn: the table is a paid subscription, the button opens the offer
+  function linkedinModal() {
+    call('/api/linkedin/status').then(function (st) {
+      linkedinOffer((st && st.offer_url) ||
+        'https://123brando--verkaufstunnel.thrivecart.com/leadscm-unlimited-leads-offer/');
+    });
+  }
+
+  // The table is a paid leads.cm subscription - there is no in-app unlock, only the offer.
+  function linkedinOffer(url) {
+    openModal({
+      title: 'LinkedIn data',
+      subtitle: 'About 105 million LinkedIn contacts in 237 countries - the full table behind leads.cm.',
+      body: '<div class="callout small">The LinkedIn table is a paid service. ' +
+        'Open the offer page to get access to the about 105 million contacts.</div>' +
+        '<div class="toolbar mt" style="margin-bottom:0">' +
+        '<button class="btn primary" id="li-offer">Open the offer page</button></div>',
+      footer: '<button class="btn" data-close>Close</button>',
+      onMount: function (r) {
+        $('#li-offer', r).onclick = function () { window.open(url, '_blank', 'noopener'); };
+      }
+    });
+  }
+  
   // ---- sequence editor
   function sequenceEditor(id) {
     var seq = id ? (state.data.sequences.filter(function (s) { return s.id === id; })[0]) : null;
@@ -5256,17 +6262,1588 @@
   }
 
 
-  var VIEWS = ['dashboard', 'leads', 'osint', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'brands', 'offers', 'match', 'social', 'ads', 'agent', 'mailboxes', 'settings'];
+  // ================================================================== RADAR + ARMY
+  // Radar finds and approves -> Army writes and sends, levels up -> Inbox sorts replies -> XP.
+  var RA = { radar: null, offerId: Number(localStorage.getItem('ls-radar-offer') || 0) || 0,
+             live: null, open: {}, poll: null, army: null, drafts: null, armyPoll: null,
+             filter: 'all', tableLimit: 60,
+             brief: null, assistUrl: '', assisting: false, assistAt: 0, llm: null };
+  var RA_ACTIONS = {};
+
+  function raPct(v) { return Math.round((Number(v) || 0) * 100); }
+  function raBar(v, color) {
+    return '<div class="bar-track" style="height:6px"><div class="bar-fill" style="width:' + raPct(v) +
+      '%;height:100%;background:' + (color || 'var(--accent)') + '"></div></div>';
+  }
+  function raLines(v) { return (v || []).join('\n'); }
+  function raSplit(v, sep) {
+    return String(v || '').split(sep || /\n|,/).map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+  function raConf(c) {
+    c = Number(c) || 0;
+    var color = c >= 70 ? 'green' : c >= 30 ? 'amber' : 'red';
+    return '<span class="badge ' + color + '" title="How far this address can be trusted">' + c + '%</span>';
+  }
+
+  // ------------------------------------------------------------------ radar: data
+  function radarOffersOf(res) {
+    return (res && res.offers) || [];
+  }
+
+  function radarLoad(keepScroll) {
+    var y = window.scrollY;
+    return loadUpgrades().then(function () {
+      return call('/api/radar/state' + (RA.offerId ? '?offer_id=' + RA.offerId : '')).then(function (res) {
+        if (!res.ok) { toast(res.error || 'Radar did not load', 'err'); return; }
+        RA.radar = res;
+        var offers = radarOffersOf(res);
+        state.offers = offers;
+        var chosen = offers.filter(function (o) { return o.id === RA.offerId; })[0];
+        if (!chosen && offers.length) {
+          RA.offerId = offers[0].id;
+          try { localStorage.setItem('ls-radar-offer', String(RA.offerId)); } catch (e) { /* private */ }
+          return call('/api/radar/state?offer_id=' + RA.offerId).then(function (next) {
+            if (next.ok) { RA.radar = next; state.offers = radarOffersOf(next); }
+            if (state.view === 'radar') { paintRadar(); if (keepScroll) window.scrollTo(0, y); }
+            radarPoll();
+          });
+        }
+        if (state.view === 'radar') {
+          paintRadar();
+          if (keepScroll) window.scrollTo(0, y);
+        }
+        radarPoll();
+      });
+    });
+  }
+
+  function radarPoll() {
+    clearTimeout(RA.poll);
+    if (state.view !== 'radar' || !RA.radar || !RA.radar.run || !RA.radar.run.running) return;
+    RA.poll = setTimeout(function () {
+      call('/api/radar/state?offer_id=' + RA.offerId).then(function (res) {
+        if (!res.ok || state.view !== 'radar') return;
+        var wasRunning = RA.radar && RA.radar.run && RA.radar.run.running;
+        RA.radar = res;
+        if (res.run.running) {
+          var bar = $('#hunt-progress'); var ph = $('#hunt-phase');
+          if (bar) bar.style.width = raPct(res.run.progress) + '%';
+          if (ph) ph.textContent = res.run.phase || 'working...';
+          radarPoll();
+        } else if (wasRunning) {
+          paintRadar();
+          toast('The hunt finished');
+        }
+      });
+    }, 1500);
+  }
+
+  function viewRadar() {
+    setTimeout(function () { if (RA.radar) paintRadar(); radarLoad(true); }, 10);
+    return '<div id="radar-root"><div class="empty"><p>Loading the radar...</p></div></div>';
+  }
+
+  // ------------------------------------------------------------------ radar: paint
+  function paintRadar() {
+    var root = $('#radar-root');
+    if (!root) return;
+    var r = RA.radar;
+    var offers = radarOffersOf(r);
+    if (offers.length && (!r.offer || !offers.filter(function (o) { return o.id === r.offer.id; }).length)) return;
+    var head = pageHead('Radar', 'Step 1: read the business link, then Edit offer for the offer and buyer profile. ' +
+      'Step 2: hunt the signals, leads and domains for the companies that fit. ' +
+      'Step 3: approve the best - the Army sends them.',
+      '<button class="btn primary" data-ra="new-offer">+ New offer</button>' +
+      '<button class="btn" data-nav="army">Open Army &rarr;</button>');
+    if (!offers.length) {
+      root.innerHTML = head + '<div class="card"><div class="empty"><div class="big">No offer yet</div>' +
+        '<p>Add the offer you sell. Radar turns it into an offer card, reads the website and the ideal ' +
+        'customer profile, and hunts the companies that fit.</p>' +
+        '<button class="btn primary" data-ra="new-offer">Add the first offer</button></div></div>';
+      return;
+    }
+    var html = head;
+    html += '<div class="toolbar" style="margin-bottom:14px;gap:8px;flex-wrap:wrap">' +
+      '<select id="ra-offer" style="max-width:360px">' + offers.map(function (o) {
+        return '<option value="' + o.id + '"' + (o.id === RA.offerId ? ' selected' : '') + '>' + h(o.name) +
+          (o.active ? '' : ' (inactive)') + '</option>';
+      }).join('') + '</select>' +
+      '<button class="btn sm" data-ra="edit-offer">Edit offer</button>' +
+      '<button class="btn sm ghost" data-ra="delete-offer" title="Removes the offer and its connections. ' +
+      'The Upgrades shelf is a separate read-only file and is never touched.">Delete offer</button>' +
+      '<button class="btn sm" data-ra="match-leads">Match my leads</button>' +
+      (r.territory ? '<span class="small dim">Territory: ' + num(r.territory.approved || 0) + ' waiting · ' +
+        num(r.territory.drafted || 0) + ' drafted · ' + num(r.territory.sent || 0) + ' sent</span>' : '') +
+      '<div class="spacer"></div><button class="btn sm ghost" data-ra="live">Score my signals now</button></div>';
+
+    html += radarAssistantHtml(r);
+    html += radarHuntHtml(r);
+    html += '<div id="ra-live"></div>';
+    html += radarRowsHtml(r);
+    root.innerHTML = html;
+    var sel = $('#ra-offer');
+    if (sel) sel.onchange = function () {
+      RA.offerId = Number(sel.value); RA.live = null; RA.open = {};
+      RA.ai = null; RA.aiMatches = null; RA.aiText = ''; RA.aiUrl = '';
+      try { localStorage.setItem('ls-radar-offer', String(RA.offerId)); } catch (e) { /* private */ }
+      radarLoad();
+    };
+    if (RA.live) paintLive();
+    raLoadLlm();
+    setTimeout(wireChat, 20);
+  }
+
+  // ------------------------------------------------------------------ radar: the assistant
+  var RA_ASSIST_STEPS = [
+    'fetching the site',
+    'reading /pricing and /about',
+    'extracting what you sell and to whom',
+    'listing product keywords',
+    'searching "alternatives to ..."',
+    'checking the candidates',
+    'keeping the closest ones',
+    'finding the team named on the site',
+    'building the company profile - clustering use cases',
+    'matching pains to buyers',
+    'scoring campaign ideas',
+    'writing campaign briefs'
+  ];
+
+  function raLogHtml(steps, running, at) {
+    if (!steps || !steps.length) return '';
+    return '<div class="log" id="ra-assist-log">' + steps.map(function (s, i) {
+      var label = typeof s === 'string' ? s : s.label;
+      var detail = typeof s === 'string' ? '' : (s.detail || '');
+      var mark, dim;
+      if (running) { mark = i === at ? '&rsaquo;' : '&middot;'; dim = i !== at; }
+      else { mark = s.ok === false ? '-' : '&#10003;'; dim = s.ok === false; }
+      return '<div' + (dim ? ' class="dim"' : '') + '>' + mark + ' ' + h(label) +
+        (detail ? ' <span class="dim">- ' + h(detail) + '</span>' : '') + '</div>';
+    }).join('') + '</div>';
+  }
+
+  function raChips(items, key) {
+    return (items || []).map(function (x) {
+      var label = key ? (x[key] || '') : x;
+      var title = key && x.why ? ' title="' + h(x.why) + '"' : '';
+      return label ? '<span class="chip"' + title + '>' + h(label) + '</span>' : '';
+    }).join('');
+  }
+
+  function raEmailDraft(row) {
+    var b = RA.brief || {};
+    var idea = (b.ideas || [])[0] || {};
+    var brief = idea.brief || {};
+    var offers = radarOffersOf(RA.radar);
+    var offer = offers.filter(function (o) { return o.id === (b.offer_id || RA.offerId); })[0] ||
+      (RA.radar && RA.radar.offer) || {};
+    var link = offer.affiliate_url || b.url || '';
+    var lines = String(brief.body || '').split('\n');
+    if (row && row.angle) lines.splice(2, 0, row.angle, '');
+    return { subject: brief.subject || '',
+             body: lines.join('\n').replace(/\{\{offer_link\}\}/g, link || '{{offer_link}}') };
+  }
+
+  function raOutreachHtml(r) {
+    var hunt = r.hunt;
+    var run = r.run || {};
+    var rows = (hunt && hunt.rows) || [];
+    var withMail = rows.filter(function (x) { return x.email; });
+    var passing = rows.filter(function (x) { return x.pass; });
+    var html = '<div class="mt" style="border-top:1px solid var(--line);padding-top:12px">' +
+      '<div class="card-head" style="margin:0 0 8px"><h2 style="font-size:13px">The outreach list</h2>' +
+      '<div class="spacer"></div>' +
+      (run.running ? '<span class="badge amber"><span class="spin"></span> hunting</span>'
+        : (rows.length ? '<span class="badge ' + (withMail.length ? 'green' : 'grey') + '">' +
+          num(withMail.length) + ' with an address</span>' : '')) +
+      '<button class="btn sm' + (rows.length ? ' ghost' : ' primary') + '" data-ra="' +
+      (run.running ? 'stop' : 'hunt') + '">' + (run.running ? 'Stop' : (rows.length ? 'Hunt again' : 'Hunt the companies')) +
+      '</button></div>';
+    if (!rows.length) {
+      html += '<div class="small dim">The list fills from your signals, your leads and the domain catalogue. ' +
+        'Hunt queries the company index, scores the fit, ranks the list, reads the best sites and finds an ' +
+        'address. It runs in the background, so you can leave this page.</div>';
+      return html + '</div>';
+    }
+    var sources = hunt.sources || {}, funnel = hunt.funnel || {};
+    html += raLogHtml([
+      { label: 'querying the company index', detail: num((sources.signals || 0) + (sources.leads || 0) +
+        (sources.catalogue || 0)) + ' candidate(s): ' + num(sources.signals || 0) + ' signals, ' +
+        num(sources.leads || 0) + ' leads, ' + num(sources.catalogue || 0) + ' catalogue' },
+      { label: 'scoring fit for the companies that take mail', detail: num(funnel.checked || 0) +
+        ' checked, ' + num(funnel.kept || 0) + ' kept' },
+      { label: 'ranking the outreach list', detail: 'best score ' + Math.round((rows[0] || {}).rank || 0) },
+      { label: 'finding decision makers', detail: num(withMail.length) + ' address(es) on ' +
+        num(rows.length) + ' companies' },
+      { label: 'assembling the contact list', detail: num(passing.length) + ' passing the card' }
+    ], false, -1);
+    html += '<div class="list" style="margin-top:10px">' + withMail.slice(0, 5).map(function (x, i) {
+      var draft = raEmailDraft(x);
+      return '<div class="list-item" style="align-items:flex-start;padding:7px 0">' +
+        '<div style="min-width:40px"><span class="badge blue">' + Math.round(x.rank || 0) + '</span></div>' +
+        '<div class="grow"><div><strong>' + h(x.name || x.domain) + '</strong> ' +
+        '<a class="t-sub" href="https://' + h(x.domain) + '" target="_blank" rel="noopener">' + h(x.domain) + '</a></div>' +
+        '<div class="t-sub">' + h(x.email) + ' <span class="dim">' + h(x.email_note || '') + '</span> ' +
+        (x.email_confidence ? raConf(x.email_confidence) : '') + '</div>' +
+        (x.why ? '<div class="small dim">' + h(x.why) + '</div>' : '') +
+        '<details style="margin-top:4px"><summary class="small dim" style="cursor:pointer">The first email</summary>' +
+        '<div class="small mt"><strong>Subject:</strong> ' + h(draft.subject) + '</div>' +
+        '<pre class="log" style="max-height:210px">' + h(draft.body) + '</pre>' +
+        '<button class="btn sm ghost" data-ra="copy-email" data-i="' + i + '">Copy the email</button></details>' +
+        '</div></div>';
+    }).join('') + '</div>';
+    if (!withMail.length) {
+      html += '<div class="small dim mt">No address was found on the kept companies yet. The Hunt "Why?" row ' +
+        'shows what each site did show.</div>';
+    }
+    html += '<div class="hint small dim" style="margin-top:8px">The draft is the top campaign brief from this ' +
+      'read, with the company\'s own opening line. Edit it before it goes anywhere.</div>';
+    return html + '</div>';
+  }
+
+  function raAssistResultHtml() {
+    var b = RA.brief;
+    if (!b || !b.ok) return '';
+    var p = b.profile || {}, team = b.team || {}, pains = b.pains || {};
+    var ideas = b.ideas || [];
+    var offer = radarOffersOf(RA.radar).filter(function (o) { return o.id === b.offer_id; })[0];
+    var saved = b.saved
+      ? '<span class="badge green">saved to ' + h((offer && offer.name) || 'the offer card') + '</span>'
+      : '<span class="badge grey">not saved - ' +
+        (b.offer_id ? 'that offer no longer exists' : 'no offer selected') + '</span>';
+    var pages = (b.pages || []).map(function (pg) {
+      return '<a href="' + h(pg.url) + '" target="_blank" rel="noopener">/' + h(pg.label) + '</a>';
+    }).join(' &middot; ');
+    var sig = b.signals || {};
+    var sigKinds = sig.kinds || {};
+    var kindOrder = ['ads', 'meta_advertiser', 'hiring', 'profile', 'qualified', 'change',
+      'new_domain', 'phishing', 'mx_missing'];
+    var kindNames = { ads: 'ad spenders', meta_advertiser: 'Meta advertisers', hiring: 'hiring',
+      profile: 'qualified sites', qualified: 'qualified sites', change: 'site changes',
+      new_domain: 'new domains', phishing: 'copycat sites', mx_missing: 'dead mailboxes',
+      osm_match: 'places', osm_batch: 'places', hot_list: 'hot list', cc: 'crawls',
+      pipeline_handoff: 'hand-offs' };
+    var sigKindChips = Object.keys(sigKinds).sort(function (a, b) {
+      var ia = kindOrder.indexOf(a), ib = kindOrder.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || sigKinds[b] - sigKinds[a];
+    }).slice(0, 8).map(function (k) {
+      return '<span class="chip">' + h((kindNames[k] || k) + ' ' + num(sigKinds[k])) + '</span>';
+    }).join('');
+    return '<div class="mt" style="border-top:1px solid var(--line);padding-top:12px">' +
+      '<div class="toolbar" style="margin:0 0 10px;gap:8px">' + saved +
+      '<span class="small dim">' + h(b.host) + ' &middot; ' + String(b.seconds || 0) + 's &middot; ' + pages + '</span>' +
+      '<div class="spacer"></div><button class="btn sm ghost" data-ra="assist-close">Clear</button></div>' +
+      raLogHtml(b.steps || [], false, -1) +
+      '<div class="grid cols-2" style="align-items:start;margin-top:14px">' +
+      '<div><h2 style="font-size:13px;margin:0 0 8px">What they sell and to whom</h2>' +
+      '<div><strong>' + h(p.name || b.host) + '</strong>' +
+      (p.category ? ' <span class="chip">' + h(p.category) + '</span>' : '') +
+      (p.buyer_role ? ' <span class="badge blue">buys: ' + h(p.buyer_role) + '</span>' : '') +
+      (Number(p.price) ? ' <span class="badge green">$' + num(p.price) + '/mo</span>' : '') + '</div>' +
+      (p.summary ? '<div class="small mt">' + h(p.summary) + '</div>' : '') +
+      (p.description ? '<div class="small dim mt">' + h(String(p.description).slice(0, 500)) + '</div>' : '') +
+      ((p.use_cases || []).length ? '<div class="small dim mt">Use cases on the site</div><div class="merge-chips">' +
+        raChips(p.use_cases, 'name') + '</div>' : '') +
+      ((p.keywords || []).length ? '<div class="small dim mt">Words the site leans on</div><div class="merge-chips">' +
+        raChips(p.keywords) + '</div>' : '') +
+      (((p.industries || []).length || (p.countries || []).length) ? '<div class="small dim mt">' +
+        (p.industries || []).map(h).join(' &middot; ') +
+        ((p.industries || []).length && (p.countries || []).length ? ' &middot; ' : '') +
+        (p.countries || []).map(h).join(' &middot; ') + '</div>' : '') +
+      '</div>' +
+      '<div><h2 style="font-size:13px;margin:0 0 8px">The team on the site</h2>' +
+      ((team.people || []).length ? '<div class="list">' + team.people.map(function (x) {
+        return '<div class="list-item" style="padding:5px 0"><div class="grow"><strong>' + h(x.name) + '</strong> ' +
+          '<span class="t-sub">' + h(x.role) + ' &middot; /' + h(x.page) + '</span></div></div>';
+      }).join('') + '</div>' : '<div class="small dim">No person is named next to a role on the pages read.</div>') +
+      ((team.emails || []).length ? '<div class="small dim mt">Mailboxes on the site</div><div class="merge-chips">' +
+        team.emails.map(function (x) { return '<span class="chip">' + h(x.email) + '</span>'; }).join('') +
+        '</div>' : '') +
+      '</div></div>' +
+      '<div class="grid cols-2" style="align-items:start;margin-top:14px">' +
+      '<div><h2 style="font-size:13px;margin:0 0 8px">Rivals and pains</h2>' +
+      ((b.rivals || []).length ? '<div class="small dim">Named as the alternative</div><div class="merge-chips">' +
+        raChips(b.rivals) + '</div>' : '<div class="small dim">No rival was found for this business.</div>') +
+      ((b.alternatives || []).length ? '<div class="small dim mt">Checked as alternatives</div><div class="merge-chips">' +
+        b.alternatives.map(function (a) {
+          return '<span class="chip" title="' + h(String(a.score || 0) + ' word(s) in common') + '">' +
+            h(a.domain) + '</span>';
+        }).join('') + '</div>' : '') +
+      ((pains.signals || []).length ? '<div class="small dim mt">Pain words this offer answers</div>' +
+        '<div class="merge-chips">' + raChips(pains.signals) + '</div>' : '') +
+      ((pains.solves || []).length ? '<div class="small dim mt">Already solved by</div><div class="merge-chips">' +
+        raChips(pains.solves) + '</div>' : '') +
+      '</div>' +
+      '<div><h2 style="font-size:13px;margin:0 0 8px">Campaign ideas, best first</h2>' +
+      '<div class="list">' + ideas.map(function (idea, i) {
+        var brief = idea.brief || {};
+        var score = Number(idea.score) || 0;
+        return '<div class="list-item" style="align-items:flex-start;padding:7px 0">' +
+          '<div style="min-width:40px"><span class="badge ' + (score >= 70 ? 'green' : score >= 45 ? 'blue' : 'grey') +
+          '">' + score + '</span></div><div class="grow">' +
+          '<div><strong>' + h(idea.title) + '</strong> <span class="small dim">' + h(idea.angle || '') + '</span></div>' +
+          '<div class="t-sub">to ' + h(brief.send_to || idea.segment || '') + '</div>' +
+          '<details style="margin-top:4px"><summary class="small dim" style="cursor:pointer">The brief</summary>' +
+          '<div class="small mt"><strong>Subject:</strong> ' + h(brief.subject || '') + '</div>' +
+          '<pre class="log" style="max-height:190px">' + h(brief.body || '') + '</pre>' +
+          '<button class="btn sm ghost" data-ra="copy-brief" data-i="' + i + '">Copy the brief</button></details>' +
+          '</div></div>';
+      }).join('') + '</div></div></div>' +
+      '<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">' +
+      '<h2 style="font-size:13px;margin:0 0 8px">From your job results</h2>' +
+      (sig.total ? '<div class="small dim">' + num(sig.total) + ' finding(s) from the last ' +
+        h(String(sig.days || 180)) + ' days are read together with this page - the hunt ranks ' +
+        'and explains companies with them too.</div>' +
+        '<div class="merge-chips mt">' + sigKindChips + '</div>' +
+        ((sig.words || []).length ? '<div class="small dim mt">Words the jobs keep turning up</div>' +
+          '<div class="merge-chips">' + raChips(sig.words) + '</div>' : '') +
+        ((sig.flags || []).length ? '<div class="small dim mt">Flags the qualifying jobs found</div>' +
+          '<div class="merge-chips">' + raChips(sig.flags) + '</div>' : '') +
+        ((sig.markets || []).length ? '<div class="small dim mt">Where those companies sit</div>' +
+          '<div class="merge-chips">' + raChips(sig.markets) + '</div>' : '') +
+        ((sig.samples || []).length ? '<div class="small dim mt">A few of them</div>' +
+          '<div class="merge-chips">' + sig.samples.slice(0, 6).map(function (s) {
+            return '<span class="chip">' + h(s.company || s.domain) + ' &middot; ' + h(s.kind) + '</span>';
+          }).join('') + '</div>' : '')
+        : '<div class="small dim">No job results yet - the daily jobs in Automation fill them.</div>') +
+      '</div>' +
+      '</div>';
+  }
+
+  function raChatCardHtml() {
+    var llm = RA.llm || {};
+    return '<div class="card" id="chat-card" style="margin-bottom:14px">' +
+      '<div class="card-head"><h2>Ask the workspace</h2><div class="spacer"></div>' +
+      '<span class="badge ' + (llm.configured ? 'green' : 'grey') + '" id="chat-llm">' +
+      h(llm.configured ? (llm.default || 'LLM ready') : 'checking the LLM provider...') + '</span></div>' +
+      '<div class="card-sub" style="margin-bottom:10px">A free-form question about the workspace: which leads fit ' +
+      'this offer, what ran last week, add an offer. It needs an LLM provider in Settings; the link reader above ' +
+      'does not.</div>' +
+      '<div id="chat-log" style="max-height:240px;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>' +
+      '<div class="row"><input type="text" id="chat-input" placeholder="e.g. which of my leads fit this offer?">' +
+      '<button class="btn primary" id="chat-send" style="max-width:96px">Send</button></div></div>';
+  }
+
+  function radarAssistantHtml(r) {
+    var offer = (r && r.offer) || {};
+    var busy = !!RA.assisting;
+    var html = '<div class="card" id="ra-assistant" style="margin-bottom:14px">' +
+      '<div class="card-head"><h2>Assistant</h2><div class="spacer"></div>' +
+      (offer.id ? '<span class="small dim">reads into: <strong>' + h(offer.name) + '</strong></span>'
+                : '<span class="badge grey">no offer yet</span>') + '</div>' +
+      '<div class="card-sub" style="margin-bottom:10px">Paste a business link once. It reads the home page and ' +
+      '/about, /pricing, /team and /contact, searches the businesses that compete with it, then writes the offer, ' +
+      'the team named on the site, the rivals, the pains and six scored campaign briefs. It also reads every ' +
+      'finding your daily jobs wrote - ad spenders, hiring, qualified sites and their flags - so the hunt aims ' +
+      'with all of it, not only this page. Plain rules - no AI provider needed.</div>' +
+      '<div class="row" style="align-items:flex-end">' +
+      '<div class="field" style="flex:1;margin:0"><label>Business or offer link</label>' +
+      '<input type="text" id="ra-assist-url" value="' + h(RA.assistUrl || offer.affiliate_url || '') +
+      '" placeholder="venys.sk"></div>' +
+      '<div class="field" style="max-width:210px;margin:0"><button class="btn primary" data-ra="assist" ' +
+      'id="ra-assist-btn"' + (busy ? ' disabled' : '') + '>' +
+      (busy ? '<span class="spin"></span>' : 'Read the business') + '</button></div></div>' +
+      '<div class="hint small dim">With an offer selected, what it reads is saved onto that offer\'s card (fields ' +
+      'that are still empty) and Hunt targets with it: who buys, the use cases, the pains, the needs it found and ' +
+      'the words and kinds your job results keep turning up. Every hunt re-reads those results. Without an offer ' +
+      'it is a dry read and nothing is written.</div>' +
+      '<div id="ra-assist-log">' + (busy ? raLogHtml(RA_ASSIST_STEPS, true, RA.assistAt || 0) : '') + '</div>' +
+      '<div id="ra-assist-out">' + raAssistResultHtml() + '</div>' +
+      (RA.brief && RA.brief.ok ? raOutreachHtml(r) : '') +
+      '</div>';
+    return html + raChatCardHtml();
+  }
+
+  function raLoadLlm() {
+    if (RA.llm !== null) return;
+    RA.llm = { configured: false };
+    call('/api/llm/providers').then(function (res) {
+      RA.llm = res.ok ? (res.status || { configured: false }) : { configured: false };
+      var badge = $('#chat-llm');
+      if (!badge) return;
+      badge.className = 'badge ' + (RA.llm.configured ? 'green' : 'grey');
+      badge.textContent = res.ok
+        ? (RA.llm.configured ? (RA.llm.default || 'LLM ready') : 'no LLM provider')
+        : 'LLM status unknown';
+    });
+  }
+
+  function aiResultHtml() {
+    var p = RA.ai;
+    if (!p) return '';
+    var chips = (p.keywords || []).slice(0, 14).map(function (k) {
+      return '<span class="chip">' + h(k) + '</span>';
+    }).join('');
+    var place = [p.industry, p.segment].filter(Boolean).map(h).join(' &middot; ');
+    return '<div class="callout' + (p.used_ai ? ' green' : '') + '" style="margin:8px 0 10px">' +
+      '<div class="small"><strong>' + (p.used_ai ? 'Read by AI' : 'Keyword extraction') + '</strong>' +
+      (p.used_ai ? '' : ' - add an LLM provider in Settings for a model read') + '</div>' +
+      (p.summary ? '<div class="mt">' + h(p.summary) + '</div>' : '') +
+      (place ? '<div class="small dim mt">' + place + '</div>' : '') +
+      '<div class="merge-chips">' + chips + '</div>' +
+      '<div class="toolbar mt" style="margin-bottom:0">' +
+      '<button class="btn sm primary" data-ra="apply-ai">Apply to card</button>' +
+      '<button class="btn sm ghost" data-ra="match-leads">Match my leads' +
+      (RA.aiMatches ? ' (' + num(RA.aiMatches.length) + ')' : '') + '</button>' +
+      '</div></div>';
+  }
+
+  function radarOfferFormHtml(r) {
+    var c = r.card || {};
+    var w = r.weights || {};
+    var cats = ['<option value="">(none)</option>'].concat((r.categories || []).map(function (k) {
+      return '<option' + (k === c.category ? ' selected' : '') + '>' + h(k) + '</option>';
+    })).join('');
+    var sizes = ['', 'solo', 'small', 'medium', 'large'].map(function (k) {
+      return '<option value="' + k + '"' + (k === c.min_size ? ' selected' : '') + '>' + (k || '(any)') + '</option>';
+    }).join('');
+    function ta(id, label, value, hint, rows) {
+      return '<div class="field"><label>' + label + '</label><textarea id="' + id + '" rows="' + (rows || 2) + '">' +
+        h(value) + '</textarea>' + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+    }
+    var weights = ['fit', 'pain', 'timing', 'pay'].map(function (k) {
+      var labels = { fit: 'Fit', pain: 'Pain', timing: 'Timing', pay: 'Can pay' };
+      return '<div class="field" style="margin-bottom:6px"><label>' + labels[k] + ' &times; <span id="w-' + k + '-v">' +
+        Number(w[k] == null ? 1 : w[k]).toFixed(1) + '</span></label><input type="range" min="0" max="2" step="0.1" ' +
+        'data-w="' + k + '" id="w-' + k + '" value="' + (w[k] == null ? 1 : w[k]) + '"></div>';
+    }).join('');
+    var sub = h(r.offer.name) + (r.offer.category ? ' &middot; ' + h(r.offer.category) : '');
+    if (r.offer.affiliate_url) sub += ' &middot; <a href="' + h(r.offer.affiliate_url) + '" target="_blank" rel="noopener">offer page</a>';
+    return '<div class="card-sub" style="margin-bottom:10px">' + sub + '</div>' +
+      '<div class="small dim" style="margin:0 0 12px">Filled from the Assistant\'s read of the business. ' +
+      'Only what the site showed is here - correct anything it read wrong.</div>' +
+      '<details' + (RA.aiOpen ? ' open' : '') + ' style="margin:0 0 12px">' +
+      '<summary class="small dim" style="cursor:pointer">AI analysis: offer, website and ideal customer profile</summary>' +
+      '<div class="field mt"><label>The offer and the customer it fits</label>' +
+      '<textarea id="ra-ai-text" rows="4" placeholder="What you sell, the problem it solves, who buys it, the price.">' +
+      h(RA.aiText || r.offer.description || '') + '</textarea>' +
+      '<div class="hint">Paste a paragraph. The AI extracts the industry, the segment and the words that describe ' +
+      'who needs it. Apply them to the card, then Hunt.</div></div>' +
+      '<div class="row"><div class="field"><label>Website to read (optional)</label>' +
+      '<input type="text" id="ra-ai-url" value="' + h(RA.aiUrl || r.offer.affiliate_url || '') + '" placeholder="your-company.com"></div>' +
+      '<div class="field" style="max-width:190px;align-self:flex-end">' +
+      '<button class="btn sm primary" data-ra="analyze">Analyze with AI</button></div></div>' +
+      '<div id="ra-ai-out">' + aiResultHtml() + '</div></details>' +
+      '<div class="row"><div class="field"><label>Kind of offer</label><select id="c-category">' + cats + '</select></div>' +
+      '<div class="field"><label>Buyer</label><input type="text" id="c-buyer" value="' + h(c.buyer_role) + '" placeholder="founder, practice manager..."></div></div>' +
+      '<div class="field"><label>Problem it solves</label><input type="text" id="c-problem" value="' + h(c.problem) + '"></div>' +
+      '<div class="row"><div class="field"><label>Price / month</label><input id="c-price" type="number" value="' + h(c.price || 0) + '"></div>' +
+      '<div class="field"><label>Smallest company</label><select id="c-size">' + sizes + '</select></div>' +
+      '<div class="field"><label>Email language</label><input type="text" id="c-language" value="' + h(c.language) + '" placeholder="auto from country"></div></div>' +
+      '<div class="row"><div class="field"><label>Countries</label><input type="text" id="c-countries" value="' + h((c.countries || []).join(', ')) + '" placeholder="Slovakia, Czechia"></div>' +
+      '<div class="field"><label>Industries</label><input type="text" id="c-industries" value="' + h((c.industries || []).join(', ')) + '" placeholder="manufacturing, dental"></div></div>' +
+      ta('c-keywords', 'Keywords (fit)', (c.keywords || []).join(', '), 'Words a fitting company would have on its site or in its row.') +
+      '<div class="row">' + ta('c-must', 'Must have (one per line, a|b = either)', raLines(c.must_have), '', 3) +
+      ta('c-out', 'Out (one per line)', raLines(c.disqualify), '', 3) + '</div>' +
+      '<div class="row">' + ta('c-competitors', 'Competitors (a switch)', (c.competitors || []).join(', ')) +
+      ta('c-complements', 'Works with', (c.complements || []).join(', ')) + '</div>' +
+      '<div class="row">' + ta('c-pain', 'Pain words (override)', (c.pain_signals || []).join(', '),
+        'Default for this kind: ' + h(((r.pain_profile || {}).signals || []).slice(0, 6).join(', ') || '-')) +
+      ta('c-solved', 'Already solved by', (c.solved_by || []).join(', '),
+        'Default: ' + h(((r.pain_profile || {}).solves || []).slice(0, 6).join(', ') || '-')) + '</div>' +
+      '<details><summary class="small dim" style="cursor:pointer;margin-bottom:8px">Score weights</summary>' + weights + '</details>';
+  }
+
+  function radarOfferModal() {
+    var r = RA.radar || {};
+    var offer = r.offer || {};
+    openModal({
+      title: 'Offer and buyer profile',
+      wide: true,
+      subtitle: offer.name ? offer.name : '',
+      body: radarOfferFormHtml(r),
+      footer: '<button class="btn" data-close>Cancel</button>' +
+              '<button class="btn primary" id="c-save">Save card</button>',
+      onMount: function (root) {
+        $$('[data-w]', root).forEach(function (inp) {
+          inp.oninput = function () {
+            var out = $('#w-' + inp.dataset.w + '-v', root);
+            if (out) out.textContent = Number(inp.value).toFixed(1);
+          };
+        });
+        var save = $('#c-save', root);
+        if (save) save.onclick = function () {
+          var btn = this;
+          btn.disabled = true;
+          saveCard().then(function (res) {
+            btn.disabled = false;
+            if (!res.ok) return toast(res.error, 'err');
+            closeModal();
+            toast('Offer and buyer profile saved');
+            radarLoad(true);
+          });
+        };
+      }
+    });
+  }
+
+  function radarCardHtml(r) {
+    var c = r.card || {};
+    var w = r.weights || {};
+    var cats = ['<option value="">(none)</option>'].concat((r.categories || []).map(function (k) {
+      return '<option' + (k === c.category ? ' selected' : '') + '>' + h(k) + '</option>';
+    })).join('');
+    var sizes = ['', 'solo', 'small', 'medium', 'large'].map(function (k) {
+      return '<option value="' + k + '"' + (k === c.min_size ? ' selected' : '') + '>' + (k || '(any)') + '</option>';
+    }).join('');
+    function ta(id, label, value, hint, rows) {
+      return '<div class="field"><label>' + label + '</label><textarea id="' + id + '" rows="' + (rows || 2) + '">' +
+        h(value) + '</textarea>' + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+    }
+    var weights = ['fit', 'pain', 'timing', 'pay'].map(function (k) {
+      var labels = { fit: 'Fit', pain: 'Pain', timing: 'Timing', pay: 'Can pay' };
+      return '<div class="field" style="margin-bottom:6px"><label>' + labels[k] + ' &times; <span id="w-' + k + '-v">' +
+        Number(w[k] == null ? 1 : w[k]).toFixed(1) + '</span></label><input type="range" min="0" max="2" step="0.1" ' +
+        'data-w="' + k + '" id="w-' + k + '" value="' + (w[k] == null ? 1 : w[k]) + '"></div>';
+    }).join('');
+    return '<div class="card"><div class="card-head"><h2>Offer card</h2><div class="spacer"></div>' +
+      '<button class="btn sm primary" data-ra="save-card">Save card</button></div>' +
+      '<div class="card-sub" style="margin-bottom:10px">' + h(r.offer.name) +
+      (r.offer.affiliate_url ? ' · <a href="' + h(r.offer.affiliate_url) + '" target="_blank" rel="noopener">link</a>' : '') +
+      ' · <a href="#offers">edit in Toolbox</a></div>' +
+      '<div class="row"><div class="field"><label>Kind of offer</label><select id="c-category">' + cats + '</select></div>' +
+      '<div class="field"><label>Buyer</label><input type="text" id="c-buyer" value="' + h(c.buyer_role) + '" placeholder="founder, practice manager..."></div></div>' +
+      '<div class="field"><label>Problem it solves</label><input type="text" id="c-problem" value="' + h(c.problem) + '"></div>' +
+      '<div class="row"><div class="field"><label>Price / month</label><input id="c-price" type="number" value="' + h(c.price || 0) + '"></div>' +
+      '<div class="field"><label>Smallest company</label><select id="c-size">' + sizes + '</select></div>' +
+      '<div class="field"><label>Email language</label><input type="text" id="c-language" value="' + h(c.language) + '" placeholder="auto from country"></div></div>' +
+      '<div class="row"><div class="field"><label>Countries</label><input type="text" id="c-countries" value="' + h((c.countries || []).join(', ')) + '" placeholder="Slovakia, Czechia"></div>' +
+      '<div class="field"><label>Industries</label><input type="text" id="c-industries" value="' + h((c.industries || []).join(', ')) + '" placeholder="manufacturing, dental"></div></div>' +
+      ta('c-keywords', 'Keywords (fit)', (c.keywords || []).join(', '), 'Words a fitting company would have on its site or in its row.') +
+      '<div class="row">' + ta('c-must', 'Must have (one per line, a|b = either)', raLines(c.must_have), '', 3) +
+      ta('c-out', 'Out (one per line)', raLines(c.disqualify), '', 3) + '</div>' +
+      '<div class="row">' + ta('c-competitors', 'Competitors (a switch)', (c.competitors || []).join(', ')) +
+      ta('c-complements', 'Works with', (c.complements || []).join(', ')) + '</div>' +
+      '<div class="row">' + ta('c-pain', 'Pain words (override)', (c.pain_signals || []).join(', '),
+        'Default for this kind: ' + h(((r.pain_profile || {}).signals || []).slice(0, 6).join(', ') || '—')) +
+      ta('c-solved', 'Already solved by', (c.solved_by || []).join(', '),
+        'Default: ' + h(((r.pain_profile || {}).solves || []).slice(0, 6).join(', ') || '—')) + '</div>' +
+      '<details><summary class="small dim" style="cursor:pointer;margin-bottom:8px">Score weights</summary>' + weights + '</details>' +
+      '</div>';
+  }
+
+  function radarHuntHtml(r) {
+    var hunt = r.hunt;
+    var run = r.run || {};
+    var mine = run.running && hunt && run.hunt_id === hunt.id;
+    var html = '<div class="card"><div class="card-head"><h2><span class="step-chip">2</span>Hunt the companies</h2><div class="spacer"></div>' +
+      (run.running ? '<button class="btn sm" data-ra="stop">Stop</button>' :
+        '<button class="btn primary" data-ra="hunt">Hunt</button>') + '</div>' +
+      '<div class="row"><div class="field"><label>Pull up to</label><input id="h-pull" type="number" min="50" max="20000" value="' +
+      ((hunt && hunt.params && hunt.params.pull) || 2000) + '"></div>' +
+      '<div class="field"><label>Keep the best</label><input id="h-keep" type="number" min="10" max="1000" value="' +
+      ((hunt && hunt.params && hunt.params.keep) || 200) + '"></div></div>';
+    var t = (hunt && hunt.params && hunt.params.targeting) || null;
+    var card = r.card || {};
+    var buyer = (t && t.buyer_role) || card.buyer_role || '';
+    var cases = (t && t.use_cases) || [];
+    var pains = (t && t.pains) || card.pain_signals || [];
+    var source = (t && t.source) || '';
+    var sig = (t && t.signals) || (card.targeting && card.targeting.signals) || null;
+    var chips = [];
+    if (buyer) chips.push('buys: ' + h(buyer));
+    if (cases.length) chips.push('use cases: ' + h(cases.slice(0, 3).join(', ')));
+    if (pains.length) chips.push('pains: ' + h(pains.slice(0, 3).join(', ')));
+    if (source) chips.push('from the read of ' + h(source));
+    if (sig && sig.total) {
+      var kindOrder = ['ads', 'meta_advertiser', 'hiring', 'profile', 'change', 'new_domain'];
+      var sigBits = kindOrder.filter(function (k) { return sig.kinds && sig.kinds[k]; }).slice(0, 3)
+        .map(function (k) { return k + ' ' + num(sig.kinds[k]); });
+      chips.push(h('job results ' + num(sig.total) + (sigBits.length ? ': ' + sigBits.join(', ') : '')));
+    }
+    html += '<div class="small dim" style="margin:-4px 0 10px">' + (chips.length ? 'Targets ' + chips.join(' &middot; ') :
+      'Targets the card only. Run the Assistant on this offer\'s site to add who it sells to.') + '</div>';
+    if (run.running) {
+      html += '<div class="small" id="hunt-phase">' + h(run.phase || 'starting...') + '</div>' +
+        '<div class="progress"><div class="fill" id="hunt-progress" style="width:' + raPct(run.progress) + '%"></div></div>' +
+        (mine ? '' : '<div class="small dim mt">Another offer\'s hunt is running.</div>');
+    }
+    if (hunt) {
+      html += '<div class="bars mt">' + (hunt.stages || []).map(function (s, i) {
+        var top = (hunt.stages[0] || [0, 0, 1])[2] || 1;
+        return '<div class="bar-row"><span>' + h(s[1]) + '</span><div class="bar-track"><div class="bar-fill" style="width:' +
+          Math.max(2, Math.round(100 * s[2] / top)) + '%;height:100%;background:' + (i >= 4 ? 'var(--green)' : 'var(--accent)') +
+          '"></div></div><span class="right">' + num(s[2]) + '</span></div>';
+      }).join('') + '</div>';
+      var dropped = Object.keys(hunt.dropped || {}).sort(function (a, b) { return hunt.dropped[b] - hunt.dropped[a]; });
+      if (dropped.length) {
+        html += '<div class="small dim mt">Left out: ' + dropped.slice(0, 6).map(function (k) {
+          return h(k) + ' (' + num(hunt.dropped[k]) + ')';
+        }).join(' · ') + '</div>';
+      }
+      if (hunt.note) html += '<div class="callout mt">' + h(hunt.note) + '</div>';
+      html += '<div class="small dim mt">' + h(hunt.status) + ' · ' + fmtWhen(hunt.ts) +
+        (hunt.sources ? ' · from signals ' + num(hunt.sources.signals || 0) + ', leads ' + num(hunt.sources.leads || 0) +
+          ', catalogue ' + num(hunt.sources.catalogue || 0) : '') + '</div>';
+    } else if (!run.running) {
+      html += '<div class="small dim">No hunt for this offer yet. The hunt reads your signals, your leads and the ' +
+        'domain catalogue, keeps the companies that pass the card and can receive mail, reads the best sites and ' +
+        'finds an address. Nothing is sent.</div>';
+    }
+    var fresh = r.fresh || [];
+    html += '<div class="card-head mt" style="margin-top:16px"><h2 style="font-size:14px">Fresh triggers</h2>' +
+      '<span class="small dim">&nbsp;last 3 days, fitting this offer</span></div>';
+    html += fresh.length ? '<div class="list">' + fresh.map(function (f) {
+      return '<div class="list-item" style="padding:6px 0"><div class="grow"><strong>' + h(f.company || f.domain) + '</strong> ' +
+        '<span class="badge violet">' + h(f.kind) + '</span><div class="t-sub">' + h(f.title) + ' · ' + fmtWhen(f.ts) + '</div></div></div>';
+    }).join('') + '</div>' : '<div class="small dim">None right now - the daily jobs in Automation feed these.</div>';
+    return html + '</div>';
+  }
+
+  function radarRowsHtml(r) {
+    var hunt = r.hunt;
+    if (!hunt || !(hunt.rows || []).length) return '';
+    var rows = hunt.rows.filter(function (x) {
+      if (RA.filter === 'pass') return x.pass && !x.approved && !x.skipped;
+      if (RA.filter === 'approved') return x.approved;
+      if (RA.filter === 'blocked') return !x.pass;
+      return !x.skipped;
+    });
+    var waiting = hunt.rows.filter(function (x) {
+      return x.pass && x.email && !x.approved && !x.skipped && (x.email_confidence || 0) >= (r.approve_min || 30);
+    }).length;
+    var filters = [['all', 'All'], ['pass', 'Passing'], ['approved', 'Approved'], ['blocked', 'Blocked']].map(function (f) {
+      return '<button class="btn sm' + (RA.filter === f[0] ? ' primary' : ' ghost') + '" data-ra="filter" data-f="' + f[0] + '">' + f[1] + '</button>';
+    }).join('');
+    var html = '<div class="card mt" style="margin-top:14px;padding:0"><div class="toolbar" style="padding:12px 14px;margin:0;border-bottom:1px solid var(--line);flex-wrap:wrap;gap:8px">' +
+      '<h2 style="margin:0;font-size:15px"><span class="step-chip">3</span>Best companies from the hunt</h2>' + filters + '<div class="spacer"></div>' +
+      '<span class="small dim">' + num(waiting) + ' ready (passing, address &ge; ' + (r.approve_min || 30) + '%)</span>' +
+      '<input id="ra-top" type="number" min="1" max="500" value="' + Math.min(25, Math.max(1, waiting)) + '" style="width:70px">' +
+      '<button class="btn sm primary" data-ra="approve-top"' + (waiting ? '' : ' disabled') + '>Approve top</button></div>';
+    html += '<div class="table-wrap"><table class="campaigns"><thead><tr><th>Company</th><th style="width:150px">Score</th>' +
+      '<th>Address</th><th>Why now</th><th style="width:170px"></th></tr></thead><tbody>';
+    html += rows.slice(0, RA.tableLimit).map(function (x) {
+      var open = RA.open[x.domain];
+      var status = x.approved ? '<span class="badge green">approved</span>' :
+        (!x.pass ? '<span class="badge red" title="' + h((x.blockers || []).join('; ')) + '">blocked</span>' : '');
+      var row = '<tr><td><strong>' + h(x.name || x.domain) + '</strong> ' + status + (x.fresh ? ' <span class="badge violet">fresh</span>' : '') +
+        '<div class="t-sub"><a href="https://' + h(x.domain) + '" target="_blank" rel="noopener">' + h(x.domain) + '</a>' +
+        [x.industry, x.country, x.size].filter(Boolean).map(function (v) { return ' · ' + h(v); }).join('') + '</div></td>' +
+        '<td><div style="display:flex;align-items:center;gap:8px"><strong style="font-size:17px">' + Math.round(x.rank || 0) +
+        '</strong><div style="flex:1;display:grid;gap:3px" title="fit ' + raPct(x.fit) + ' · pain ' + raPct(x.pain) +
+        ' · timing ' + raPct(x.timing) + ' · pay ' + raPct(x.pay) + '">' + raBar(x.fit) + raBar(x.pain, 'var(--red)') +
+        raBar(x.timing, 'var(--amber)') + raBar(x.pay, 'var(--green)') + '</div></div></td>' +
+        '<td>' + (x.email ? h(x.email) + ' ' + raConf(x.email_confidence) + '<div class="t-sub">' + h(x.email_note || '') + '</div>'
+          : '<span class="small dim">no address found</span>') + '</td>' +
+        '<td class="small">' + h(x.why || '') + '</td>' +
+        '<td class="nowrap right"><button class="btn sm ghost" data-ra="why" data-d="' + h(x.domain) + '">' + (open ? 'Less' : 'Why?') + '</button>' +
+        (x.approved ? '' : (x.email ? ' <button class="btn sm" data-ra="approve" data-d="' + h(x.domain) + '">Approve</button>' : '') +
+          ' <button class="btn sm ghost" data-ra="skip" data-d="' + h(x.domain) + '" title="Hide from this hunt">Skip</button>') +
+        '</td></tr>';
+      if (open) {
+        var site = x.site || {};
+        var q = site.qualify || {};
+        row += '<tr><td colspan="5" style="background:var(--panel-2)"><div class="grid cols-2 small" style="gap:18px">' +
+          '<div><div><b>Opening angle:</b> ' + h(x.angle || '—') + '</div>' +
+          '<div class="mt"><b>Fit</b> ' + raPct(x.fit) + ' · <b>Pain</b> ' + raPct(x.pain) + ' · <b>Timing</b> ' + raPct(x.timing) +
+          ' · <b>Can pay</b> ' + raPct(x.pay) + ' · strict score ' + (x.score || 0) + '</div>' +
+          ((x.blockers || []).length ? '<div class="mt" style="color:var(--red)"><b>Blocked:</b> ' + h(x.blockers.join('; ')) + '</div>' : '') +
+          '<div class="mt"><b>Tools seen:</b> ' + h((x.tools || []).join(', ') || '—') + '</div>' +
+          (q.reason ? '<div class="mt"><b>Buying signal:</b> ' + h(q.reason) + ' (' + h(q.verdict || '') + ')</div>' : '') +
+          ((x.evidence || []).length ? '<div class="mt"><b>Findings:</b> ' + x.evidence.map(function (e) {
+            return h(e.kind) + ': ' + h(e.title); }).join(' · ') + '</div>' : '') + '</div>' +
+          '<div><div><b>' + h(site.title || 'Site') + '</b></div><div class="muted">' + h(site.description || '') + '</div>' +
+          '<div class="dim mt" style="max-height:110px;overflow:auto">' + h((site.text || x.description || '').slice(0, 700)) + '</div>' +
+          (x.approved ? '' : '<div class="mt"><button class="btn sm ghost" data-ra="never" data-d="' + h(x.domain) +
+            '">Never contact this domain</button></div>') + '</div></div></td></tr>';
+      }
+      return row;
+    }).join('');
+    html += '</tbody></table></div>';
+    if (rows.length > RA.tableLimit) {
+      html += '<div style="padding:10px 14px"><button class="btn sm ghost" data-ra="more">Show ' +
+        Math.min(60, rows.length - RA.tableLimit) + ' more</button></div>';
+    }
+    return html + '</div>';
+  }
+
+  function paintLive() {
+    var box = $('#ra-live');
+    if (!box || !RA.live) return;
+    var L = RA.live;
+    box.innerHTML = '<div class="card mt" style="margin-top:14px"><div class="card-head"><h2>Scored from your signals</h2>' +
+      '<span class="small dim">&nbsp;' + num(L.total) + ' with a score · ' + num(L.blocked) + ' blocked by the card</span>' +
+      '<div class="spacer"></div><button class="btn sm ghost" data-ra="live-close">Close</button></div>' +
+      (L.rows.length ? '<div class="list">' + L.rows.slice(0, 30).map(function (x) {
+        return '<div class="list-item"><div class="grow"><strong>' + h(x.name || x.domain) + '</strong> <span class="badge blue">' +
+          x.score + '</span><div class="t-sub">' + h(x.domain) + ' · ' + h(x.why) + '</div></div></div>';
+      }).join('') + '</div>' : '<div class="small dim">Nothing your feeds found scores above zero for this card yet. Run a Hunt - it also reads sites.</div>') +
+      '</div>';
+  }
+
+  // ------------------------------------------------------------------ radar: actions
+  function cardFromForm() {
+    if (!$('#c-category')) return null;
+    return {
+      category: $('#c-category').value, buyer_role: $('#c-buyer').value, problem: $('#c-problem').value,
+      price: Number($('#c-price').value || 0), min_size: $('#c-size').value, language: $('#c-language').value,
+      countries: raSplit($('#c-countries').value, ','), industries: raSplit($('#c-industries').value, ','),
+      keywords: raSplit($('#c-keywords').value, ','), must_have: raSplit($('#c-must').value, '\n'),
+      disqualify: raSplit($('#c-out').value, '\n'), competitors: raSplit($('#c-competitors').value, ','),
+      complements: raSplit($('#c-complements').value, ','), pain_signals: raSplit($('#c-pain').value, ','),
+      solved_by: raSplit($('#c-solved').value, ',')
+    };
+  }
+  function weightsFromForm() {
+    var w = {};
+    ['fit', 'pain', 'timing', 'pay'].forEach(function (k) { var el = $('#w-' + k); w[k] = el ? Number(el.value) : 1; });
+    return w;
+  }
+  function saveCard() {
+    var card = cardFromForm();
+    if (!card) return Promise.resolve({ ok: true, skipped: true });
+    return call('/api/radar/card', { offer_id: RA.offerId, card: card, weights: weightsFromForm() });
+  }
+
+  RA_ACTIONS['save-card'] = function (b) {
+    b.disabled = true;
+    saveCard().then(function (res) {
+      b.disabled = false;
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Card saved'); radarLoad(true);
+    });
+  };
+  RA_ACTIONS.hunt = function (b) {
+    b.disabled = true;
+    saveCard().then(function () {
+      return call('/api/radar/hunt', { offer_id: RA.offerId, pull: Number($('#h-pull').value || 2000),
+                                       keep: Number($('#h-keep').value || 200) });
+    }).then(function (res) {
+      b.disabled = false;
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Hunting - you can leave this page, it keeps going'); radarLoad(true);
+    });
+  };
+  RA_ACTIONS.stop = function () { call('/api/radar/stop', {}).then(function () { toast('Stopping after the current step'); }); };
+  RA_ACTIONS.filter = function (b) { RA.filter = b.dataset.f; RA.tableLimit = 60; paintRadar(); };
+  RA_ACTIONS.more = function () { RA.tableLimit += 60; paintRadar(); };
+  RA_ACTIONS.why = function (b) { RA.open[b.dataset.d] = !RA.open[b.dataset.d]; var y = window.scrollY; paintRadar(); window.scrollTo(0, y); };
+  RA_ACTIONS.approve = function (b) {
+    var row = (RA.radar.hunt.rows || []).filter(function (x) { return x.domain === b.dataset.d; })[0] || {};
+    if ((row.email_confidence || 0) < (RA.radar.approve_min || 30) &&
+        !window.confirm('The address ' + row.email + ' is only ' + (row.email_confidence || 0) + '% sure. Approve anyway?')) return;
+    b.disabled = true;
+    call('/api/radar/approve', { hunt_id: RA.radar.hunt.id, domains: [b.dataset.d], allow_low: true }).then(function (res) {
+      if (!res.ok) { b.disabled = false; return toast(res.error, 'err'); }
+      if (res.errors && res.errors.length) toast(res.errors[0], 'err'); else toast('Approved - it joins the territory');
+      radarLoad(true);
+    });
+  };
+  RA_ACTIONS['approve-top'] = function (b) {
+    b.disabled = true;
+    call('/api/radar/approve', { hunt_id: RA.radar.hunt.id, top: Number($('#ra-top').value || 25) }).then(function (res) {
+      b.disabled = false;
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Approved ' + res.approved + (res.skipped_low_confidence ? ' · ' + res.skipped_low_confidence + ' skipped (unsure address)' : ''));
+      radarLoad(true);
+    });
+  };
+  RA_ACTIONS.skip = function (b) {
+    call('/api/radar/skip', { hunt_id: RA.radar.hunt.id, domain: b.dataset.d }).then(function () { radarLoad(true); });
+  };
+  RA_ACTIONS.never = function (b) {
+    if (!window.confirm('Never contact ' + b.dataset.d + ' from the Army?')) return;
+    call('/api/radar/skip', { hunt_id: RA.radar.hunt.id, domain: b.dataset.d, never: true }).then(function () {
+      toast('Blocked ' + b.dataset.d); radarLoad(true);
+    });
+  };
+  RA_ACTIONS.live = function (b) {
+    b.disabled = true;
+    call('/api/radar/live?offer_id=' + RA.offerId).then(function (res) {
+      b.disabled = false;
+      if (!res.ok) return toast(res.error, 'err');
+      RA.live = res; paintLive();
+    });
+  };
+  RA_ACTIONS['live-close'] = function () { RA.live = null; var box = $('#ra-live'); if (box) box.innerHTML = ''; };
+  RA_ACTIONS['new-offer'] = function () {
+    openModal({
+      title: 'New offer', wide: true,
+      subtitle: 'The offer you sell. Radar builds its card and hunts the companies that fit.',
+      body: '<div class="row"><div class="field"><label>Name</label><input type="text" id="no-name" placeholder="Bookkeeping for dental clinics"></div>' +
+        '<div class="field"><label>Your website or offer page (optional)</label>' +
+        '<div class="row" style="gap:8px;align-items:center"><input type="text" id="no-link" style="flex:1" placeholder="https://your-company.com">' +
+        '<button class="btn sm" type="button" id="no-read" title="Open this page and fill the fields below from it">Read the website</button></div>' +
+        '<div class="hint small dim" id="no-read-status"></div></div>' +
+        '<div class="field"><label>The offer</label><textarea id="no-text" rows="9" placeholder="What it is, the problem it solves, who buys it, the price.\n' +
+        'Must have: runs paid ads.\nOut: agencies and freelancers.\nCompetitors: Triple Whale, Northbeam.\n' +
+        'Countries: United States, United Kingdom.\nIndustries: ecommerce, supplements.\nPrice $230 per month."></textarea>' +
+        '<div class="hint">Lines starting with <b>Must</b>, <b>Out:</b>, <b>Competitors:</b>, <b>Countries:</b>, <b>Industries:</b> and a price are picked into the card. You can analyse it with AI and edit it after.</div></div>',
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="no-save">Create offer and card</button>',
+      onMount: function (root) {
+        var readBtn = $('#no-read', root);
+        if (readBtn) readBtn.onclick = function () {
+          var url = ($('#no-link', root).value || '').trim();
+          if (!url) return toast('Paste the website first', 'err');
+          var label = readBtn.textContent;
+          readBtn.disabled = true; readBtn.textContent = 'Reading...';
+          call('/api/offer/read', { url: url }).then(function (r) {
+            readBtn.disabled = false; readBtn.textContent = label;
+            if (!r.ok) return toast(r.error || 'Could not read that page', 'err');
+            var f = r.fields || {};
+            var filled = [];
+            var nameEl = $('#no-name', root);
+            if (nameEl && !nameEl.value.trim() && f.name) { nameEl.value = f.name; filled.push('name'); }
+            var textEl = $('#no-text', root);
+            if (textEl && !textEl.value.trim()) {
+              var lines = [];
+              if (f.description) lines.push(f.description);
+              if (f.keywords) lines.push('Keywords: ' + f.keywords);
+              if (f.price) lines.push('Price $' + f.price + ' per month');
+              if (lines.length) { textEl.value = lines.join('\n\n'); filled.push('the offer text'); }
+            }
+            var status = $('#no-read-status', root);
+            if (status) status.textContent = filled.length
+              ? 'Read ' + (r.url || url) + ' into: ' + filled.join(', ') + '. Check it, then create the offer.'
+              : 'Read the page, but those fields already had text.';
+            toast(filled.length ? 'Filled from the page' : 'Nothing new to fill');
+          }).catch(function () {
+            readBtn.disabled = false; readBtn.textContent = label;
+            toast('Could not reach the app', 'err');
+          });
+        };
+        $('#no-save', root).onclick = function () {
+          var btn = this; btn.disabled = true;
+          call('/api/radar/offer', { name: $('#no-name').value, affiliate_url: $('#no-link').value, text: $('#no-text').value })
+            .then(function (res) {
+              btn.disabled = false;
+              if (!res.ok) return toast(res.error, 'err');
+              closeModal(); RA.offerId = res.offer_id; RA.ai = null; RA.aiMatches = null; RA.aiText = '';
+              toast('Offer created - analyse it, then Hunt');
+              refresh(); radarLoad();
+            });
+        };
+      }
+    });
+  };
+  function radarOfferIdOf(b) {
+    return Number((b && b.dataset && b.dataset.offerId) || RA.offerId || 0);
+  }
+  RA_ACTIONS['edit-offer'] = function (b) {
+    var id = radarOfferIdOf(b);
+    if (!id) return toast('Pick an offer first', 'err');
+    radarOfferModal();
+  };
+  RA_ACTIONS['delete-offer'] = function (b) {
+    var id = radarOfferIdOf(b);
+    var o = radarOffersOf(RA.radar).filter(function (x) { return x.id === id; })[0];
+    if (!o) return toast('Pick an offer first', 'err');
+    if (!confirm('Delete the offer "' + o.name + '"?\n\nThis removes the offer and its connections.')) return;
+    call('/api/offer/delete', { id: id }).then(function (res) {
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Deleted: ' + o.name);
+      if (RA.offerId === id) { RA.offerId = 0; RA.ai = null; RA.aiMatches = null; RA.live = null; }
+      radarLoad(true); refresh();
+    });
+  };
+  RA_ACTIONS['match-leads'] = function () {
+    if (!RA.offerId) return toast('Pick an offer first', 'err');
+    offerMatches(RA.offerId);
+  };
+  RA_ACTIONS.analyze = function (b) {
+    RA.aiText = ($('#ra-ai-text') || {}).value || '';
+    RA.aiUrl = ($('#ra-ai-url') || {}).value || '';
+    RA.aiOpen = true;
+    if (!RA.aiText.trim() && !RA.aiUrl.trim()) return toast('Paste the offer or a website first', 'err');
+    b.disabled = true;
+    call('/api/match', { text: RA.aiText, url: RA.aiUrl, limit: 5 }).then(function (res) {
+      b.disabled = false;
+      if (!res.ok) return toast(res.error, 'err');
+      RA.ai = res.profile || null;
+      RA.aiMatches = res.matches || [];
+      var out = $('#ra-ai-out');
+      if (out) out.innerHTML = aiResultHtml();
+      paintRadar();
+    });
+  };
+  RA_ACTIONS['apply-ai'] = function () {
+    if (!RA.ai) return toast('Analyze the offer first', 'err');
+    var kws = (RA.ai.keywords || []).slice(0, 15);
+    if ($('#c-keywords')) {
+      var have = raSplit($('#c-keywords').value, ',');
+      var haveLower = have.map(function (x) { return x.toLowerCase(); });
+      kws.forEach(function (k) {
+        if (haveLower.indexOf(k.toLowerCase()) < 0) { have.push(k); haveLower.push(k.toLowerCase()); }
+      });
+      $('#c-keywords').value = have.join(', ');
+    }
+    if ($('#c-industries') && RA.ai.industry) {
+      var inds = raSplit($('#c-industries').value, ',');
+      var indsLower = inds.map(function (x) { return x.toLowerCase(); });
+      if (indsLower.indexOf(RA.ai.industry.toLowerCase()) < 0) inds.push(RA.ai.industry);
+      $('#c-industries').value = inds.join(', ');
+    }
+    if ($('#c-buyer') && !$('#c-buyer').value && RA.ai.segment) $('#c-buyer').value = RA.ai.segment;
+    saveCard().then(function (res) {
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Card updated from the AI profile'); RA.aiOpen = true; radarLoad(true);
+    });
+  };
+
+  RA_ACTIONS.assist = function (b) {
+    var input = $('#ra-assist-url');
+    var url = ((input && input.value) || '').trim();
+    if (!url) { toast('Paste a link first', 'err'); return; }
+    RA.assistUrl = url;
+    RA.assisting = true; RA.assistAt = 0;
+    var log = $('#ra-assist-log');
+    if (log) log.innerHTML = raLogHtml(RA_ASSIST_STEPS, true, 0);
+    if (b) { b.disabled = true; b.innerHTML = '<span class="spin"></span>'; }
+    var tick = setInterval(function () {
+      if (!RA.assisting) return;
+      RA.assistAt = Math.min(RA_ASSIST_STEPS.length - 1, (RA.assistAt || 0) + 1);
+      var live = $('#ra-assist-log');
+      if (live) live.innerHTML = raLogHtml(RA_ASSIST_STEPS, true, RA.assistAt);
+    }, 1200);
+    var y = window.scrollY;
+    call('/api/radar/assistant', { url: url, offer_id: RA.offerId || 0 }).then(function (res) {
+      clearInterval(tick);
+      RA.assisting = false;
+      if (!res.ok) {
+        var box = $('#ra-assist-log');
+        if (box) box.innerHTML = '<div class="small" style="color:var(--red)">' +
+          h(res.error || 'Could not read that link') + '</div>';
+        if (b) { b.disabled = false; b.textContent = 'Read the business'; }
+        toast(res.error || 'Could not read that link', 'err');
+        return;
+      }
+      RA.brief = res;
+      paintRadar();
+      window.scrollTo(0, y);
+      if (res.saved) radarLoad(true);
+      if (res.saved) toast('Read ' + res.host + ' and saved it to this offer');
+      else if (RA.offerId) toast('Read ' + res.host + ' - it could not be saved');
+      else toast('Read ' + res.host + ' - pick an offer to save it');
+    }).catch(function () {
+      clearInterval(tick);
+      RA.assisting = false;
+      if (b) { b.disabled = false; b.textContent = 'Read the business'; }
+      var box = $('#ra-assist-log');
+      if (box) box.innerHTML = '<div class="small" style="color:var(--red)">The app did not answer. ' +
+        'Is it still starting?</div>';
+    });
+  };
+
+  RA_ACTIONS['assist-close'] = function () { RA.brief = null; paintRadar(); };
+
+  RA_ACTIONS['copy-brief'] = function (b) {
+    var idea = ((RA.brief || {}).ideas || [])[Number(b.dataset.i)] || {};
+    var brief = idea.brief || {};
+    var text = 'Subject: ' + (brief.subject || '') + '\n\n' + (brief.body || '');
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+    toast('Copied the brief');
+  };
+
+  RA_ACTIONS['copy-email'] = function (b) {
+    var hunt = RA.radar && RA.radar.hunt;
+    var withMail = (((hunt || {}).rows) || []).filter(function (x) { return x.email; });
+    var row = withMail[Number(b.dataset.i)];
+    if (!row) return toast('That row is gone - hunt again', 'err');
+    var draft = raEmailDraft(row);
+    var text = 'Subject: ' + draft.subject + '\n\n' + draft.body;
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+    toast('Copied the email for ' + (row.name || row.domain));
+  };
+
+  // ------------------------------------------------------------------ army: data
+  function armyLoad(keepScroll) {
+    var y = window.scrollY;
+    return Promise.all([call('/api/army/state'), call('/api/army/drafts?status=pending')]).then(function (res) {
+      if (!res[0].ok) { toast(res[0].error || 'Army did not load', 'err'); return; }
+      RA.army = res[0];
+      RA.drafts = res[1].ok ? res[1].drafts : [];
+      if (state.view === 'army') {
+        paintArmy();
+        if (keepScroll) window.scrollTo(0, y);
+      }
+    });
+  }
+
+  function viewArmy() {
+    setTimeout(function () { if (RA.army) paintArmy(); armyLoad(true); }, 10);
+    clearInterval(RA.armyPoll);
+    RA.armyPoll = setInterval(function () {
+      if (state.view !== 'army') { clearInterval(RA.armyPoll); return; }
+      if (document.activeElement && /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) return;
+      armyLoad(true);
+    }, 45000);
+    return '<div id="army-root"><div class="empty"><p>Mustering the army...</p></div></div>';
+  }
+
+  // ------------------------------------------------------------------ army: paint
+  function paintArmy() {
+    var root = $('#army-root');
+    if (!root) return;
+    var A = RA.army;
+    A.offers = A.offers || [];
+    var html = pageHead('Army', 'Each soldier works one mailbox and one offer. It takes companies the Radar approved, ' +
+      'writes to each one from what its site says, and levels up from the replies.',
+      '<button class="btn" data-ra="deploy">Deploy soldiers</button>' +
+      '<button class="btn" data-ra="turn-all">Turn for everyone</button>' +
+      '<button class="btn ghost" data-ra="pause-all">Pause all</button>' +
+      '<button class="btn ghost" data-ra="resume-all">Resume all</button>');
+    if (!A.mailboxes.length) {
+      html += '<div class="callout"><strong>No mailbox yet.</strong> Every soldier needs its own inbox. ' +
+        '<a href="#mailboxes">Add mailboxes</a> - or sync your Manyreach senders in Settings - then come back.</div>';
+    }
+    if (!A.offers.length) {
+      html += '<div class="callout"><strong>No offer yet.</strong> <a href="#radar">Paste one on the Radar</a> - soldiers sell offers.</div>';
+    }
+    html += '<div class="grid cols-3" style="align-items:start">' + armyWriterHtml(A) + armyMissionHtml(A) + armyRanksHtml(A) + '</div>';
+    html += armyDraftsHtml(A);
+    html += '<div class="card-head" style="margin:18px 0 10px"><h2>Soldiers</h2><span class="small dim">&nbsp;' +
+      num(A.soldiers.length) + ' enlisted · ' + num(A.free_mailboxes.length) + ' free mailbox' +
+      (A.free_mailboxes.length === 1 ? '' : 'es') + '</span><div class="spacer"></div>' +
+      (A.free_mailboxes.length ? '<button class="btn sm" data-ra="recruit">+ New soldier</button>' : '') + '</div>';
+    if (!A.soldiers.length) {
+      html += '<div class="card"><div class="empty"><div class="big">No soldiers yet</div><p>' +
+        (A.mailboxes.length ? 'Press <b>Deploy soldiers</b> to put one on every mailbox in one click - on one offer, or spread across several.'
+          : 'Add a mailbox first.') + '</p>' +
+        (A.mailboxes.length && A.offers.length ? '<button class="btn primary" data-ra="deploy">Deploy soldiers</button>' : '') + '</div></div>';
+    } else {
+      html += '<div class="grid cols-3">' + A.soldiers.map(function (s) { return soldierHtml(s, A); }).join('') + '</div>';
+    }
+    html += '<div class="grid cols-2 mt" style="margin-top:14px;align-items:start">' + armyBoardHtml(A) + armyDoctrineHtml(A) + '</div>';
+    html += armyActivityHtml(A);
+    root.innerHTML = html;
+    $$('[data-soldier-offer]').forEach(function (sel) {
+      sel.onchange = function () {
+        call('/api/army/soldier/save', { id: Number(sel.dataset.soldierOffer), offer_id: Number(sel.value) }).then(function (res) {
+          if (!res.ok) return toast(res.error, 'err');
+          toast('Offer changed'); armyLoad(true);
+        });
+      };
+    });
+    $$('[data-soldier-angle]').forEach(function (sel) {
+      sel.onchange = function () {
+        call('/api/army/soldier/save', { id: Number(sel.dataset.soldierAngle), angle: sel.value }).then(function (res) {
+          if (!res.ok) return toast(res.error, 'err');
+          toast(sel.value ? 'Angle locked to ' + sel.value : 'Doctrine picks the angle'); armyLoad(true);
+        });
+      };
+    });
+    $$('[data-army-toggle]').forEach(function (inp) {
+      inp.onchange = function () {
+        var body = {}; body[inp.dataset.armyToggle] = inp.checked;
+        call('/api/army/settings', body).then(function (res) {
+          if (!res.ok) return toast(res.error, 'err');
+          toast('Saved'); armyLoad(true);
+        });
+      };
+    });
+    var wsel = $('#army-writer');
+    if (wsel) wsel.onchange = function () {
+      call('/api/army/settings', { writer_provider_id: Number(wsel.value) }).then(function () { toast('Writer set'); armyLoad(true); });
+    };
+  }
+
+  function armyWriterHtml(A) {
+    var w = A.writer || {};
+    var s = A.settings || {};
+    function tog(key, label, hint) {
+      return '<label class="check" style="margin:6px 0" title="' + h(hint) + '"><input type="checkbox" data-army-toggle="' + key + '"' +
+        (s[key] ? ' checked' : '') + '> ' + label + '</label>';
+    }
+    var html = '<div class="card"><div class="card-head"><h2>Writer &amp; orders</h2></div>';
+    if (w.configured) {
+      html += '<div class="small">Messages are written by <b>' + h(w.name) + '</b> <span class="dim">' + h(w.model) + '</span></div>';
+      if ((w.providers || []).length > 1) {
+        html += '<div class="field mt"><select id="army-writer">' + w.providers.map(function (p) {
+          return '<option value="' + p.id + '"' + (p.id === w.provider_id ? ' selected' : '') + '>' + h(p.name) + ' · ' + h(p.model) + '</option>';
+        }).join('') + '</select></div>';
+      }
+    } else {
+      html += '<div class="small dim">No AI writer yet - soldiers fall back to the offer\'s pitch template.</div>';
+    }
+    if (!w.openrouter) {
+      html += '<div class="mt"><div class="field" style="margin-bottom:6px"><label>OpenRouter API key</label>' +
+        '<input id="or-key" type="password" placeholder="sk-or-..."></div><div class="field" style="margin-bottom:6px"><label>Model</label>' +
+        '<input type="text" id="or-model" value="openai/gpt-4o-mini"></div>' +
+        '<button class="btn sm primary" data-ra="openrouter">Connect OpenRouter</button> ' +
+        '<a class="small" href="https://openrouter.ai/keys" target="_blank" rel="noopener">get a key</a></div>';
+    } else {
+      html += '<div class="mt"><button class="btn sm ghost" data-ra="openrouter-model">Change OpenRouter model</button></div>';
+    }
+    html += '<div class="sep" style="margin:10px 0"></div>' +
+      tog('review_first', 'Review every message before it goes out', 'Soldiers write drafts; you approve them below.') +
+      tog('auto', 'Soldiers work on their own (every ' + (s.tick_minutes || 5) + ' min)', 'Off: soldiers only move when you press Turn.') +
+      tog('include_link', 'Put the offer link in the email', 'Adds the affiliate link and the disclosure under the message.') +
+      tog('followups', 'Follow-ups from Sergeant up', 'One follow-up 3 days after an unanswered email.');
+    return html + '</div>';
+  }
+
+  function armyMissionHtml(A) {
+    var m = A.mission || {};
+    var pct = Math.min(100, Math.round(100 * (m.progress || 0) / (m.target || 3)));
+    return '<div class="card"><div class="card-head"><h2>Weekly mission</h2><div class="spacer"></div>' +
+      '<span class="badge ' + (m.done ? 'green' : 'amber') + '">' + m.xp + ' XP</span></div>' +
+      '<div style="font-weight:600">' + h(m.title) + '</div>' +
+      '<div class="progress"><div class="fill" style="width:' + pct + '%;background:' + (m.done ? 'var(--green)' : 'var(--amber)') + '"></div></div>' +
+      '<div class="small dim mt">' + num(m.progress) + ' / ' + num(m.target) + ' this week' +
+      (m.leader ? ' · <b>' + h(m.leader) + '</b> leads with ' + m.leader_count : '') + (m.paid ? ' · paid out' : '') + '</div>' +
+      '<div class="grid cols-3 mt" style="gap:8px;margin-top:14px">' +
+      '<div class="kpi" style="padding:8px"><div class="label">Drafts</div><div class="value" style="font-size:20px">' + num(A.drafts_pending) + '</div></div>' +
+      '<div class="kpi" style="padding:8px"><div class="label">Queued</div><div class="value" style="font-size:20px">' + num(A.drafts_approved) + '</div></div>' +
+      '<div class="kpi" style="padding:8px"><div class="label">Unsorted</div><div class="value" style="font-size:20px">' + num(A.unsorted_replies) + '</div></div></div>' +
+      (A.unsorted_replies ? '<button class="btn sm ghost mt" data-ra="sort-replies">Sort replies now</button>' : '') +
+      '</div>';
+  }
+
+  function armyRanksHtml(A) {
+    return '<div class="card"><div class="card-head"><h2>Ranks</h2><span class="small dim">&nbsp;send 5 · reply 10 · positive 50 XP</span></div>' +
+      '<div class="list">' + A.ranks.map(function (r, i) {
+        return '<div class="list-item" style="padding:5px 0"><div class="avatar" style="width:26px;height:26px;font-size:11px">' + (i + 1) +
+          '</div><div class="grow"><strong>' + h(r.name) + '</strong> <span class="small dim">' + num(r.xp) + ' XP</span>' +
+          '<div class="t-sub">' + h(r.unlock) + '</div></div></div>';
+      }).join('') + '</div></div>';
+  }
+
+  function armyDraftsHtml(A) {
+    var list = RA.drafts || [];
+    if (!list.length) {
+      return (A.settings.review_first && A.soldiers.length) ? '<div class="callout mt" style="margin-top:14px">No drafts waiting. ' +
+        'Press <b>Turn</b> on a soldier (or <b>Turn for everyone</b>) - it picks the best company in its territory and writes to it.</div>' : '';
+    }
+    return '<div class="card mt" style="margin-top:14px"><div class="card-head"><h2>Waiting for your approval</h2>' +
+      '<span class="small dim">&nbsp;' + num(list.length) + ' drafts · approved ones go out inside the sending window, one gap at a time</span>' +
+      '<div class="spacer"></div><button class="btn sm" data-ra="approve-all">Approve all</button></div>' +
+      list.map(function (d) {
+        return '<div class="list-item" style="align-items:flex-start;border-top:1px solid var(--line);padding:12px 0">' +
+          '<div class="grow"><div><strong>' + h(d.company || d.domain || d.to_email) + '</strong> ' +
+          '<span class="badge grey">' + h(d.to_email) + '</span> <span class="badge violet">' + h(d.angle || '') + '</span> ' +
+          (d.kind === 'followup' ? '<span class="badge amber">follow-up</span> ' : '') +
+          '<span class="small dim">' + h(d.soldier_name || '') + ' · ' + h(d.offer_name || '') + ' · ' + h(d.writer || '') + '</span></div>' +
+          (d.why ? '<div class="t-sub">' + h(d.why) + '</div>' : '') +
+          '<input type="text" class="mt" data-draft-subject="' + d.id + '" value="' + h(d.subject) + '" style="margin-top:8px;font-weight:600">' +
+          '<textarea data-draft-body="' + d.id + '" rows="7" style="margin-top:6px">' + h(d.body) + '</textarea></div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px;min-width:150px">' +
+          '<button class="btn sm primary" data-ra="draft-send" data-id="' + d.id + '">Send now</button>' +
+          '<button class="btn sm" data-ra="draft-approve" data-id="' + d.id + '">Approve (queue)</button>' +
+          '<select data-draft-angle="' + d.id + '"><option value="">rewrite as...</option>' + A.angles.map(function (a) {
+            return '<option value="' + a + '">' + a + '</option>'; }).join('') + '</select>' +
+          '<button class="btn sm ghost" data-ra="draft-rewrite" data-id="' + d.id + '">Rewrite</button>' +
+          '<button class="btn sm ghost" data-ra="draft-reject" data-id="' + d.id + '">Reject</button>' +
+          '<button class="btn sm ghost" data-ra="draft-never" data-id="' + d.id + '" style="color:var(--red)">Never this company</button></div></div>';
+      }).join('') + '</div>';
+  }
+
+  function soldierHtml(s, A) {
+    var rk = s.rank || {};
+    var en = s.energy || {};
+    var hl = s.health || {};
+    var stateColor = { training: 'blue', active: 'green', paused: 'grey', benched: 'red' }[s.state] || 'grey';
+    var span = (rk.next_xp || rk.xp) - (rk.floor_xp || 0);
+    var xpPct = rk.next_xp ? Math.round(100 * (rk.xp - rk.floor_xp) / Math.max(1, span)) : 100;
+    var enPct = en.limit ? Math.round(100 * (en.used + en.queued) / en.limit) : 100;
+    var t = s.totals || {};
+    var offerSel = '<select data-soldier-offer="' + s.id + '" style="font-size:12px;padding:4px 6px">' +
+      '<option value="0">(no offer)</option>' + A.offers.map(function (o) {
+        return '<option value="' + o.id + '"' + (o.id === s.offer_id ? ' selected' : '') + '>' + h(o.name) + '</option>';
+      }).join('') + '</select>';
+    var angleSel = '<select data-soldier-angle="' + s.id + '" style="font-size:12px;padding:4px 6px"><option value="">angle: doctrine picks</option>' +
+      A.angles.map(function (a) {
+        return '<option value="' + a + '"' + (s.angle_locked && s.angle === a ? ' selected' : '') + '>angle: ' + a + '</option>';
+      }).join('') + '</select>';
+    return '<div class="card"><div class="card-head" style="margin-bottom:6px"><div class="avatar" style="background:var(--accent-soft)">' +
+      h((s.name || '?').slice(0, 2).toUpperCase()) + '</div><div style="margin-left:8px"><div style="font-weight:700">' + h(s.name) +
+      '</div><div class="t-sub">' + h(s.from_email || s.mailbox_name || '') + '</div></div><div class="spacer"></div>' +
+      '<span class="badge ' + stateColor + '">' + h(s.state) + '</span></div>' +
+      '<div class="small"><b>Lv ' + (rk.level || 1) + ' ' + h(rk.name) + '</b> <span class="dim">' + num(rk.xp) + (rk.next_xp ? ' / ' + num(rk.next_xp) : '') + ' XP</span></div>' +
+      raBar(xpPct / 100, 'var(--violet)') +
+      '<div class="small mt">Energy <b>' + num(Math.max(0, en.limit - en.used - en.queued)) + '</b> left <span class="dim">(' + num(en.used) + ' sent' +
+      (en.queued ? ', ' + num(en.queued) + ' drafted' : '') + ' of ' + num(en.limit) + ' today)</span></div>' +
+      raBar(enPct / 100, 'var(--amber)') +
+      '<div class="mt" style="display:grid;gap:6px;margin-top:10px">' + offerSel + angleSel + '</div>' +
+      '<div class="small dim mt">Territory <b style="color:var(--text)">' + num(s.territory) + '</b> · sent ' + num(t.sent || 0) +
+      ' · replies ' + num(t.replies || 0) + ' · positive ' + num(t.positives || 0) + '</div>' +
+      '<div class="small dim">Mailbox health: <span style="color:' + (hl.status === 'ok' ? 'var(--green)' : hl.status === 'watch' ? 'var(--amber)' : 'var(--red)') + '">' +
+      h(hl.status) + '</span> · ' + num(hl.bounces) + ' bounces / ' + num(hl.sent) + ' sent (30d)</div>' +
+      '<div class="toolbar mt" style="margin:10px 0 0;gap:6px;flex-wrap:wrap">' +
+      '<button class="btn sm primary" data-ra="turn" data-id="' + s.id + '"' + (s.state === 'paused' || s.state === 'benched' ? ' disabled' : '') + '>Turn</button>' +
+      (s.state === 'paused' ? '<button class="btn sm" data-ra="sstate" data-id="' + s.id + '" data-state="active">Resume</button>' :
+        s.state === 'benched' ? '<button class="btn sm" data-ra="sstate" data-id="' + s.id + '" data-state="active">Unbench</button>' :
+          '<button class="btn sm ghost" data-ra="sstate" data-id="' + s.id + '" data-state="paused">Pause</button>') +
+      '<button class="btn sm ghost" data-ra="edit-soldier" data-id="' + s.id + '">Edit</button>' +
+      '<button class="btn sm ghost" data-ra="dismiss" data-id="' + s.id + '">Dismiss</button></div></div>';
+  }
+
+  function armyBoardHtml(A) {
+    return '<div class="card"><div class="card-head"><h2>Leaderboard</h2><span class="small dim">&nbsp;this week</span></div>' +
+      (A.leaderboard.length ? '<table><thead><tr><th>#</th><th>Soldier</th><th>Rank</th><th class="right">Sent</th><th class="right">Replies</th>' +
+        '<th class="right">Positive</th><th class="right">XP</th></tr></thead><tbody>' + A.leaderboard.map(function (r, i) {
+          return '<tr><td>' + (i + 1) + '</td><td><b>' + h(r.name) + '</b></td><td>' + h(r.rank) + '</td><td class="right">' + num(r.sent) +
+            '</td><td class="right">' + num(r.replies) + '</td><td class="right">' + num(r.positives) + '</td><td class="right">' + num(r.week_xp) + '</td></tr>';
+        }).join('') + '</tbody></table>' : '<div class="small dim">Nobody has fought yet.</div>') + '</div>';
+  }
+
+  function armyDoctrineHtml(A) {
+    var rows = A.doctrine || [];
+    return '<div class="card"><div class="card-head"><h2>Doctrine</h2><span class="small dim">&nbsp;which angle earns replies, per offer · judged after ' +
+      A.bandit_min + ' sends each</span></div>' +
+      (rows.length ? '<table><thead><tr><th>Offer</th><th>Angle</th><th class="right">Sends</th><th class="right">Replies</th>' +
+        '<th class="right">Positive</th><th class="right">Rate</th></tr></thead><tbody>' + rows.map(function (r) {
+          return '<tr><td>' + h(r.offer || '') + '</td><td>' + h(r.angle) + (r.ready ? '' : ' <span class="badge grey">learning</span>') +
+            '</td><td class="right">' + num(r.sends) + '</td><td class="right">' + num(r.replies) + '</td><td class="right">' + num(r.positives) +
+            '</td><td class="right">' + Math.round(r.rate * 1000) / 10 + '%</td></tr>';
+        }).join('') + '</tbody></table>' : '<div class="small dim">Every send is counted against its angle (' + A.angles.join(', ') +
+        '). Until each has ' + A.bandit_min + ' sends, soldiers rotate them; after that the best one gets most of the work.</div>') + '</div>';
+  }
+
+  function armyActivityHtml(A) {
+    var icons = { send: '✉', followup: '↻', drafted: '✎', positive: '★', reply: '↩', not_now: '⏸', unsub: '⊘',
+      bounce: '⚠', auto_reply: '⌛', rank: '▲', benched: '⛔', graduated: '🎓', recruited: '+', send_failed: '✕', unbenched: '↑' };
+    return '<div class="card mt" style="margin-top:14px"><div class="card-head"><h2>Field log</h2></div>' +
+      ((A.events || []).length ? '<div class="list">' + A.events.map(function (e) {
+        return '<div class="list-item" style="padding:5px 0"><div style="width:22px;text-align:center">' + (icons[e.kind] || '·') +
+          '</div><div class="grow small"><b>' + h(e.soldier_name || 'Army') + '</b> ' + h(e.kind.replace('_', ' ')) +
+          (e.angle ? ' <span class="badge grey">' + h(e.angle) + '</span>' : '') + ' <span class="dim">' + h(e.detail || '') + '</span></div>' +
+          '<div class="small dim nowrap">' + fmtWhen(e.ts) + '</div></div>';
+      }).join('') + '</div>' : '<div class="small dim">Quiet so far.</div>') + '</div>';
+  }
+
+  // ------------------------------------------------------------------ army: actions
+  function armyAfter(res, okText) {
+    if (!res.ok) { toast(res.error || 'That did not work', 'err'); return armyLoad(true); }
+    if (okText) toast(okText);
+    return armyLoad(true);
+  }
+  RA_ACTIONS.openrouter = function (b) {
+    var key = ($('#or-key') || {}).value || '';
+    if (!key.trim()) return toast('Paste the OpenRouter key first', 'err');
+    b.disabled = true;
+    call('/api/army/openrouter', { api_key: key, model: ($('#or-model') || {}).value || '' }).then(function (res) {
+      b.disabled = false;
+      if (res.ok && res.test && !res.test.ok) toast('Saved, but the test failed: ' + res.test.error, 'err');
+      armyAfter(res, res.ok && res.test && res.test.ok ? 'OpenRouter connected - soldiers write with it now' : '');
+    });
+  };
+  RA_ACTIONS['openrouter-model'] = function () {
+    var w = RA.army.writer || {};
+    openModal({
+      title: 'OpenRouter model', subtitle: 'Any model id from openrouter.ai/models, e.g. openai/gpt-4o-mini or anthropic/claude-3.5-haiku.',
+      body: '<div class="field"><label>Model</label><input type="text" id="orm" value="' + h(w.model || 'openai/gpt-4o-mini') + '"></div>' +
+        '<div class="field"><label>New key (blank keeps the saved one)</label><input id="ork" type="password"></div>',
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="orm-save">Save &amp; test</button>',
+      onMount: function (root) {
+        $('#orm-save', root).onclick = function () {
+          call('/api/army/openrouter', { api_key: $('#ork').value, model: $('#orm').value }).then(function (res) {
+            closeModal();
+            if (res.ok && res.test && !res.test.ok) toast('Saved, but the test failed: ' + res.test.error, 'err');
+            armyAfter(res, res.ok && res.test && res.test.ok ? 'Model saved and tested' : '');
+          });
+        };
+      }
+    });
+  };
+  RA_ACTIONS.deploy = function () {
+    var A = RA.army;
+    if (!A.offers.length) return toast('Add an offer on the Radar first', 'err');
+    openModal({
+      title: 'Deploy soldiers', wide: true,
+      subtitle: A.free_mailboxes.length + ' free mailbox(es) get a soldier each. Tick the offers they should sell.',
+      body: '<div class="list">' + A.offers.map(function (o) {
+        return '<label class="check list-item" style="padding:6px 0"><input type="checkbox" data-dep-offer="' + o.id + '"' +
+          (o.territory ? ' checked' : '') + '> <span class="grow"><b>' + h(o.name) + '</b> <span class="small dim">' + num(o.territory) +
+          ' approved companies · ' + num(o.soldiers) + ' soldier(s)</span></span></label>';
+      }).join('') + '</div>' +
+        '<div class="field mt"><label>How</label><select id="dep-mode">' +
+        '<option value="spread">Spread across the ticked offers (more soldiers where the territory is bigger)</option>' +
+        '<option value="same">Everyone on the first ticked offer</option></select></div>' +
+        '<label class="check"><input type="checkbox" id="dep-reassign"> Also re-assign the soldiers I already have</label>',
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="dep-go">Deploy</button>',
+      onMount: function (root) {
+        $('#dep-go', root).onclick = function () {
+          var ids = $$('[data-dep-offer]', root).filter(function (c) { return c.checked; }).map(function (c) { return Number(c.dataset.depOffer); });
+          if (!ids.length) return toast('Tick at least one offer', 'err');
+          call('/api/army/deploy', { offer_ids: ids, mode: $('#dep-mode').value, reassign: $('#dep-reassign').checked }).then(function (res) {
+            closeModal();
+            armyAfter(res, res.ok ? 'Deployed ' + res.created + ' new' + (res.reassigned ? ', re-assigned ' + res.reassigned : '') : '');
+          });
+        };
+      }
+    });
+  };
+  function soldierForm(s) {
+    var A = RA.army;
+    var boxes = s ? A.mailboxes : A.free_mailboxes;
+    openModal({
+      title: s ? 'Edit ' + s.name : 'New soldier',
+      body: '<div class="row"><div class="field"><label>Callsign</label><input type="text" id="sf-name" value="' + h(s ? s.name : '') + '" placeholder="auto"></div>' +
+        '<div class="field"><label>Mailbox</label><select id="sf-box"' + (s ? ' disabled' : '') + '>' + boxes.map(function (b) {
+          return '<option value="' + b.id + '"' + (s && s.mailbox_id === b.id ? ' selected' : '') + '>' + h(b.name) + ' · ' + h(b.from_email) + '</option>';
+        }).join('') + '</select></div></div>' +
+        '<div class="row"><div class="field"><label>Offer</label><select id="sf-offer"><option value="0">(none)</option>' + A.offers.map(function (o) {
+          return '<option value="' + o.id + '"' + (s && s.offer_id === o.id ? ' selected' : '') + '>' + h(o.name) + '</option>';
+        }).join('') + '</select></div>' +
+        '<div class="field"><label>Writes in</label><select id="sf-lang">' + [['auto', 'auto (from the company\'s country)'], ['en', 'English'],
+          ['sk', 'Slovak'], ['cs', 'Czech'], ['de', 'German'], ['pl', 'Polish'], ['hu', 'Hungarian']].map(function (l) {
+          return '<option value="' + l[0] + '"' + ((s ? s.language : 'auto') === l[0] ? ' selected' : '') + '>' + l[1] + '</option>';
+        }).join('') + '</select></div></div>' +
+        '<div class="field"><label>Persona / voice (optional)</label><textarea id="sf-persona" rows="3" placeholder="Writes like a founder who ran an ecommerce brand; short, dry, no buzzwords.">' +
+        h(s ? s.persona : '') + '</textarea></div>',
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="sf-save">Save</button>',
+      onMount: function (root) {
+        $('#sf-save', root).onclick = function () {
+          var body = { name: $('#sf-name').value, offer_id: Number($('#sf-offer').value), language: $('#sf-lang').value,
+                       persona: $('#sf-persona').value };
+          if (s) body.id = s.id; else body.mailbox_id = Number($('#sf-box').value);
+          call('/api/army/soldier/save', body).then(function (res) { if (res.ok) closeModal(); armyAfter(res, 'Saved'); });
+        };
+      }
+    });
+  }
+  RA_ACTIONS.recruit = function () { soldierForm(null); };
+  RA_ACTIONS['edit-soldier'] = function (b) {
+    soldierForm(RA.army.soldiers.filter(function (s) { return s.id === Number(b.dataset.id); })[0]);
+  };
+  RA_ACTIONS.dismiss = function (b) {
+    if (!window.confirm('Dismiss this soldier? Its XP is lost, its mailbox is freed and its drafts are dropped.')) return;
+    call('/api/army/soldier/delete', { id: Number(b.dataset.id) }).then(function (res) { armyAfter(res, 'Dismissed'); });
+  };
+  RA_ACTIONS.sstate = function (b) {
+    call('/api/army/soldier/state', { id: Number(b.dataset.id), state: b.dataset.state }).then(function (res) { armyAfter(res, 'Done'); });
+  };
+  RA_ACTIONS['pause-all'] = function () {
+    call('/api/army/soldier/state', { everyone: true, state: 'paused' }).then(function (res) { armyAfter(res, 'Everyone paused'); });
+  };
+  RA_ACTIONS['resume-all'] = function () {
+    call('/api/army/soldier/state', { everyone: true, state: 'active' }).then(function (res) { armyAfter(res, 'Back to work'); });
+  };
+  RA_ACTIONS.turn = function (b) {
+    b.disabled = true; b.textContent = 'Writing...';
+    call('/api/army/turn', { id: Number(b.dataset.id) }).then(function (res) {
+      if (res.ok) toast(res.drafted ? 'Draft ready for ' + (res.company || res.to) : 'Sent to ' + res.to);
+      armyAfter(res);
+    });
+  };
+  RA_ACTIONS['turn-all'] = function (b) {
+    b.disabled = true; b.textContent = 'Writing...';
+    call('/api/army/turn_all', {}).then(function (res) {
+      var errs = (res.results || []).filter(function (r) { return !r.ok; });
+      toast((res.drafted || 0) + ' drafted, ' + (res.sent || 0) + ' sent' + (errs.length ? ' · ' + errs[0].error : ''), errs.length && !res.drafted && !res.sent ? 'err' : '');
+      armyLoad(true);
+    });
+  };
+  RA_ACTIONS['sort-replies-inbox'] = function () {
+    call('/api/army/replies/sort', {}).then(function (res) {
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Sorted ' + (res.sorted || 0) + ' replies'); loadInbox(Number(($('#inbox-box') || {}).value || 0));
+    });
+  };
+  RA_ACTIONS['sort-replies'] = function () {
+    call('/api/army/replies/sort', {}).then(function (res) { armyAfter(res, 'Sorted ' + (res.sorted || 0) + ' replies'); });
+  };
+  function draftEdits(id) {
+    var s = $('[data-draft-subject="' + id + '"]'); var bd = $('[data-draft-body="' + id + '"]');
+    return call('/api/army/draft/update', { id: id, subject: s ? s.value : undefined, body: bd ? bd.value : undefined });
+  }
+  RA_ACTIONS['draft-send'] = function (b) {
+    var id = Number(b.dataset.id); b.disabled = true; b.textContent = 'Sending...';
+    draftEdits(id).then(function () { return call('/api/army/draft/send', { id: id }); }).then(function (res) {
+      armyAfter(res, res.ok ? 'Sent to ' + res.to : '');
+    });
+  };
+  RA_ACTIONS['draft-approve'] = function (b) {
+    var id = Number(b.dataset.id);
+    draftEdits(id).then(function () { return call('/api/army/draft/approve', { ids: [id] }); }).then(function (res) {
+      armyAfter(res, 'Queued - it goes out in the sending window');
+    });
+  };
+  RA_ACTIONS['approve-all'] = function () {
+    var ids = (RA.drafts || []).map(function (d) { return d.id; });
+    Promise.all(ids.map(draftEdits)).then(function () { return call('/api/army/draft/approve', { all: true }); }).then(function (res) {
+      armyAfter(res, 'Queued ' + res.approved + ' - they go out in the sending window');
+    });
+  };
+  RA_ACTIONS['draft-rewrite'] = function (b) {
+    var id = Number(b.dataset.id); var sel = $('[data-draft-angle="' + id + '"]');
+    b.disabled = true; b.textContent = 'Writing...';
+    call('/api/army/draft/rewrite', { id: id, angle: sel ? sel.value : '' }).then(function (res) { armyAfter(res, 'Rewritten'); });
+  };
+  RA_ACTIONS['draft-reject'] = function (b) {
+    call('/api/army/draft/reject', { id: Number(b.dataset.id) }).then(function (res) { armyAfter(res, 'Rejected'); });
+  };
+  RA_ACTIONS['draft-never'] = function (b) {
+    if (!window.confirm('Reject and never contact this company from the Army?')) return;
+    call('/api/army/draft/reject', { id: Number(b.dataset.id), never: true }).then(function (res) { armyAfter(res, 'Blocked'); });
+  };
+
+  // ------------------------------------------------------------------ inbox: reply classes
+  var REPLY_CLASS_BADGE = { positive: 'green', not_now: 'amber', unsub: 'red', bounce: 'red', auto_reply: 'grey', reply: 'blue' };
+  function replyClassBadge(r) {
+    var c = r['class'] || (r.is_bounce ? 'bounce' : '');
+    if (!c) return '<span class="badge grey" title="Not sorted yet">unsorted</span>';
+    return '<span class="badge ' + (REPLY_CLASS_BADGE[c] || 'grey') + '">' + h(c.replace('_', ' ')) + '</span>';
+  }
+  function replyClassSelect(r) {
+    var c = r['class'] || '';
+    return '<select data-reply-class="' + r.id + '" style="font-size:12px;padding:3px 6px;max-width:130px" title="Correct the sorting">' +
+      ['', 'positive', 'not_now', 'reply', 'auto_reply', 'unsub', 'bounce'].map(function (k) {
+        return '<option value="' + k + '"' + (k === c ? ' selected' : '') + '>' + (k ? k.replace('_', ' ') : 'sort as...') + '</option>';
+      }).join('') + '</select>';
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-ra]');
+    if (t && RA_ACTIONS[t.dataset.ra] && !t.disabled) { e.preventDefault(); RA_ACTIONS[t.dataset.ra](t, e); }
+  });
+  document.addEventListener('change', function (e) {
+    var t = e.target.closest('[data-reply-class]');
+    if (!t || !t.value) return;
+    call('/api/army/reply/class', { id: Number(t.dataset.replyClass), 'class': t.value }).then(function (res) {
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Sorted as ' + res['class'].replace('_', ' ') + ' - XP and the lead updated');
+      if (typeof loadInbox === 'function') loadInbox(Number(($('#inbox-box') || {}).value || 0));
+    });
+  });
+
+
+  // ================================================================== RIGHT RAIL
+  // Always visible: what is running, today's reach / replies / positives, leads, army, offers, hot.
+  var RAIL = { data: null, timer: null, collapsed: false };
+  try { RAIL.collapsed = localStorage.getItem('ls-rail') === 'closed'; } catch (e) { /* private */ }
+
+  function railApply() {
+    document.body.classList.toggle('rail-closed', RAIL.collapsed);
+    var t = $('#rail-toggle');
+    if (t) t.textContent = RAIL.collapsed ? '‹' : '›';
+    if (t) t.title = RAIL.collapsed ? 'Show the live panel' : 'Hide the live panel';
+  }
+
+  function railLoad() {
+    clearTimeout(RAIL.timer);
+    if (RAIL.collapsed) { RAIL.timer = setTimeout(railLoad, 30000); return; }
+    call('/api/rail').then(function (res) {
+      if (res && res.ok) { RAIL.data = res; railPaint(); }
+      var busy = res && res.ok && (res.running || []).length;
+      RAIL.timer = setTimeout(railLoad, document.hidden ? 60000 : (busy ? 4000 : 15000));
+    });
+  }
+
+  function railStat(label, value, sub, color, go) {
+    return '<div class="rail-stat"' + (go ? ' data-nav="' + go + '" style="cursor:pointer"' : '') + '><div class="rail-v"' +
+      (color ? ' style="color:' + color + '"' : '') + '>' + value + '</div><div class="rail-l">' + label + '</div>' +
+      (sub ? '<div class="rail-s">' + sub + '</div>' : '') + '</div>';
+  }
+
+  function railStop(r) {
+    if (r.key === undefined || r.key === null || r.key === '') return '';
+    return '<button class="rail-stop" data-stop-kind="' + h(r.kind) + '" data-stop-key="' + h(String(r.key)) + '"' +
+      (r.cancel ? ' disabled' : '') + ' title="Stop it and keep what is already saved">' +
+      (r.cancel ? 'Stopping' : 'Stop') + '</button>';
+  }
+
+  function railPaint() {
+    var box = $('#rail-body');
+    if (!box || !RAIL.data) return;
+    var d = RAIL.data, t = d.today, L = d.leads, A = d.army;
+    var html = '';
+    // running work
+    html += '<div class="rail-sec"><div class="rail-h">Running now <span class="badge ' + (d.running.length ? 'blue' : 'grey') + '">' +
+      d.running.length + '</span></div>';
+    if (d.running.length) {
+      html += d.running.map(function (r) {
+        var go = r.kind === 'hunt' ? 'radar' : r.kind === 'job' ? 'results' : r.kind === 'import' ? 'leads' : '';
+        return '<div class="rail-job"' + (go ? ' data-nav="' + go + '"' : '') + '><div class="rail-job-top"><span class="spin"></span><b>' + h(r.name) +
+          '</b><span class="dim">' + (r.percent ? r.percent + '%' : '') + '</span>' + railStop(r) + '</div>' +
+          '<div class="rail-s">' + h(r.phase || '') + (r.eta ? ' · ' + fmtEta(r.eta) + ' left' : '') +
+          (r.rows ? ' · ' + num(r.rows) + ' rows' : '') + '</div>' +
+          '<div class="progress" style="margin-top:5px;height:4px"><div class="fill" style="width:' + (r.percent || 3) + '%"></div></div></div>';
+      }).join('');
+    } else {
+      html += '<div class="rail-s">Nothing running.' + ((d.recent_runs || []).length ? ' Last: ' + d.recent_runs.slice(0, 2).map(function (r) {
+        return h(r.job_key) + ' <span style="color:' + (r.status === 'ok' ? 'var(--green)' : 'var(--red)') + '">' + h(r.status) + '</span>';
+      }).join(', ') : '') + '</div>';
+    }
+    html += '</div>';
+    // today
+    var capTxt = t.capacity ? 'of ' + num(t.capacity) + ' capacity' : '';
+    html += '<div class="rail-sec"><div class="rail-h">Today</div><div class="rail-grid">' +
+      railStat('Reached', num(t.sent), capTxt + (t.army_sent ? (capTxt ? ' · ' : '') + num(t.army_sent) + ' by the army' : ''), '', 'sequences') +
+      railStat('Replies', num(t.replies), t.sent ? Math.round(t.reply_rate * 1000) / 10 + '% reply rate' : '', '', 'inbox') +
+      railStat('Positive', num(t.positive), t.bounces ? num(t.bounces) + ' bounces' : '', 'var(--green)', 'inbox') +
+      railStat('To approve', num(t.drafts), t.queued ? num(t.queued) + ' queued to send' : '', t.drafts ? 'var(--amber)' : '', 'army') +
+      '</div>' + (t.unread ? '<div class="rail-s" data-nav="inbox" style="cursor:pointer;margin-top:6px">✉ ' + num(t.unread) + ' unread in the inbox</div>' : '') + '</div>';
+    // army
+    html += '<div class="rail-sec" data-nav="army" style="cursor:pointer"><div class="rail-h">Army <span class="badge ' + (A.total ? 'violet' : 'grey') + '">' +
+      num(A.total) + ' soldiers</span></div><div class="rail-s">' + num(A.active) + ' active · ' + num(A.training) + ' training' +
+      (A.paused ? ' · ' + num(A.paused) + ' paused' : '') + (A.benched ? ' · <span style="color:var(--red)">' + num(A.benched) + ' benched</span>' : '') + '</div>';
+    if (A.mission && A.mission.target) {
+      html += '<div class="rail-s" style="margin-top:4px">Mission ' + num(A.mission.progress) + '/' + num(A.mission.target) + ' positive' +
+        (A.mission.leader ? ' · ' + h(A.mission.leader) + ' leads' : '') + '</div><div class="progress" style="height:4px;margin-top:4px">' +
+        '<div class="fill" style="background:var(--amber);width:' + Math.min(100, Math.round(100 * A.mission.progress / A.mission.target)) + '%"></div></div>';
+    }
+    html += '</div>';
+    // leads
+    html += '<div class="rail-sec"><div class="rail-h" data-nav="leads" style="cursor:pointer">Leads <span class="dim">' + num(L.total) + '</span></div>' +
+      '<div class="rail-grid">' + railStat('New today', '+' + num(L.new_today), num(L.signals_today) + ' new signals', '', 'leads') +
+      railStat('Territory', num(L.territory), 'approved, waiting', '', 'radar') + '</div>' +
+      '<div class="rail-funnel">' + [['new', L.new], ['contacted', L.contacted], ['replied', L.replied], ['interested', L.interested], ['won', L.won]].map(function (x) {
+        return '<div><span>' + x[0] + '</span><b>' + num(x[1]) + '</b></div>';
+      }).join('') + '</div></div>';
+    // offers
+    var railOffers = d.offers || [];
+    if (railOffers.length) {
+      html += '<div class="rail-sec"><div class="rail-h" data-nav="radar" style="cursor:pointer">Offers</div>' + railOffers.map(function (o) {
+        return '<div class="rail-row" data-nav="radar"><span class="grow">' + h(o.name) + '</span><span class="dim" title="soldiers · approved companies · sent today · positive today">' +
+          o.soldiers + '⚔ · ' + num(o.territory) + ' · ' + num(o.sent_today) + '✉' + (o.positive_today ? ' · <b style="color:var(--green)">' + o.positive_today + '★</b>' : '') + '</span></div>';
+      }).join('') + '</div>';
+    }
+    // hot
+    var icon = { positive: '★', signal: '⚡', radar: '◎' };
+    html += '<div class="rail-sec"><div class="rail-h">Hot today</div>' + ((d.hot || []).length ? d.hot.map(function (x) {
+      return '<div class="rail-hot" data-nav="' + x.go + '"><span class="rail-ic ' + x.kind + '">' + (icon[x.kind] || '·') + '</span><div class="grow"><b>' +
+        h(x.title) + '</b><div class="rail-s">' + h(x.detail) + '</div></div></div>';
+    }).join('') : '<div class="rail-s">Nothing hot yet today. Positive replies, fresh signals that fit your offers and the best unapproved Radar finds show up here.</div>') + '</div>';
+    html += '<div class="rail-s" style="text-align:right;margin-top:8px">updated ' + new Date(d.ts * 1000).toLocaleTimeString() + '</div>';
+    box.innerHTML = html;
+    $$('[data-stop-kind]', box).forEach(function (b) {
+      b.onclick = function (ev) {
+        ev.preventDefault(); ev.stopPropagation();
+        b.disabled = true; b.textContent = 'Stopping';
+        call('/api/jobs/cancel', { kind: b.dataset.stopKind, key: b.dataset.stopKey }).then(function (res) {
+          if (!res || !res.ok) {
+            b.disabled = false; b.textContent = 'Stop';
+            toast((res && res.error) || 'Could not stop it.', 'err');
+            return;
+          }
+          toast(res.note || 'Stopping');
+          setTimeout(railLoad, 900);
+        });
+      };
+    });
+  }
+
+  (function bootRail() {
+    var t = $('#rail-toggle');
+    if (t) t.onclick = function () {
+      RAIL.collapsed = !RAIL.collapsed;
+      try { localStorage.setItem('ls-rail', RAIL.collapsed ? 'closed' : 'open'); } catch (e) { /* private */ }
+      railApply();
+      if (!RAIL.collapsed) railLoad();
+    };
+    railApply();
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) railLoad(); });
+    setTimeout(railLoad, 300);
+  })();
+
+
+  var VIEWS = ['dashboard', 'radar', 'army', 'leads', 'osint', 'domains', 'sequences', 'inbox', 'automation', 'signals', 'results', 'brands', 'offers', 'match', 'social', 'ads', 'agent', 'mailboxes', 'settings'];
 
   function go(view) {
-    if (view === 'daily') view = 'signals';
+    if (view === 'daily') view = 'dashboard';
+    if (view === 'match') view = 'radar';
     if (VIEWS.indexOf(view) < 0) view = 'dashboard';
     state.view = view;
     SOCIAL.rendered = false;
     if (location.hash !== '#' + view) history.replaceState(null, '', '#' + view);
-    if (view === 'leads') loadLeads().then(function () { render(); });
+    if (view === 'leads') loadLeads();
     if (view === 'domains') loadDomains().then(function () { render(); });
     if (view === 'settings' && !state.llmProviders) loadLlm();
+    if (view === 'results') {
+      state.runs = null;
+      loadRuns().then(function () { render(); pollResults(); });
+    }
     render();
     paintChrome();
   }

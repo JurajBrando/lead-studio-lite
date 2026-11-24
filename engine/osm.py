@@ -323,3 +323,61 @@ def _domain_of(url):
         text = "https://" + text
     host = urllib.parse.urlsplit(text).netloc.lower()
     return host[4:] if host.startswith("www.") else host
+
+
+def lookup_domain(domain, name="", area="", timeout=25):
+    """One business in OSM for an existing domain - enrichment, not a lead search.
+
+    Nominatim answers with the element's tags (address, phone, email, website, opening
+    hours). A match is preferred when the tagged website is the domain itself, then when
+    the name matches exactly, so a common name does not attach the wrong shop.
+    """
+    domain = _domain_of(domain)
+    if not domain or "." not in domain:
+        return {}
+    query = clean(name) or domain.split(".")[0].replace("-", " ").replace("_", " ")
+    if area:
+        query = "%s, %s" % (query, clean(area))
+    params = {"q": query, "format": "jsonv2", "limit": 5, "addressdetails": 1, "extratags": 1}
+    request = urllib.request.Request(NOMINATIM + "?" + urllib.parse.urlencode(params),
+                                     headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", "replace") or "[]")
+    except (urllib.error.URLError, OSError):
+        return {}
+    if not isinstance(data, list) or not data:
+        return {}
+    wanted = query.split(",")[0].strip().lower()
+    best, best_score = None, 0
+    for item in data:
+        tags = item.get("extratags") or {}
+        website = _contact(tags, ("website", "contact:website", "url", "contact:url"))
+        host = _domain_of(website)
+        score = 0
+        if host and (host == domain or host.endswith("." + domain) or domain.endswith("." + host)):
+            score = 3
+        elif clean(item.get("name")).lower() == wanted and wanted:
+            score = 2
+        elif clean(item.get("name")):
+            score = 1
+        if score > best_score:
+            best, best_score = item, score
+    if not best or best_score < 2:
+        return {}
+    tags = best.get("extratags") or {}
+    address = best.get("address") or {}
+    street = " ".join(filter(None, [clean(address.get("road")),
+                                    clean(address.get("house_number"))]))
+    return {"osm_id": "%s/%s" % (best.get("osm_type", ""), best.get("osm_id", "")),
+            "name": clean(best.get("name")),
+            "category": "%s/%s" % (clean(best.get("category")), clean(best.get("type"))),
+            "email": _contact(tags, ("email", "contact:email")).lower(),
+            "phone": _contact(tags, ("phone", "contact:phone", "contact:mobile")),
+            "website": _contact(tags, ("website", "contact:website", "url", "contact:url")),
+            "street": street,
+            "city": clean(address.get("city") or address.get("town") or address.get("village")),
+            "postcode": clean(address.get("postcode")),
+            "country": clean(address.get("country")),
+            "opening_hours": clean(tags.get("opening_hours")),
+            "lat": str(best.get("lat") or ""), "lon": str(best.get("lon") or "")}

@@ -34,6 +34,13 @@ CONNECTIONS = {
         "note": "Campaigns, prospects and replies, through Manyreach's remote MCP server. "
                 "Signing in asks for your Manyreach API key.",
     },
+    "dnsniffer": {
+        "label": "DNSniffer",
+        "url": "https://dnsniffer.com/mcp",
+        "note": "Domain and DNS search over 379M live domains. Its public tools need no "
+                "sign-in; an API key only adds your own brand monitors. Connect with no "
+                "token and it works as it is.",
+    },
 }
 
 # What each connection can be asked to download, and how. Manyreach exposes a small set of
@@ -142,9 +149,18 @@ def re_slug(value):
 
 
 def connections():
-    """Built-in plus the ones the user added."""
+    """Built-in plus the ones the user added.
+
+    A custom server that points at the same URL as a built-in one is left out: pressing
+    Connect on a server added by hand used to fail where the preset now works, and two
+    cards for one address are confusing.
+    """
     out = dict(CONNECTIONS)
-    out.update(config.load_settings().get("mcp_custom") or {})
+    seen = {str(entry.get("url") or "").rstrip("/").lower() for entry in out.values()}
+    for name, entry in (config.load_settings().get("mcp_custom") or {}).items():
+        if str(entry.get("url") or "").rstrip("/").lower() in seen:
+            continue
+        out[name] = entry
     return out
 
 
@@ -164,7 +180,7 @@ def _save(name, block):
 def disconnect(name):
     connection(name)
     block = _saved(name)
-    for key in ("access_token", "refresh_token", "expires_at", "scope", "connected_at"):
+    for key in ("access_token", "refresh_token", "expires_at", "scope", "connected_at", "open"):
         block.pop(key, None)
     _save(name, block)
     return {"ok": True}
@@ -205,10 +221,37 @@ def _pkce():
     return verifier, challenge
 
 
+def probe(name):
+    """A handshake without any token, for servers that need no sign-in at all."""
+    client = Client(name, "")
+    client.initialize()
+    return client.tools()
+
+
 def begin(name, port):
-    """Register the app if needed and return the URL the user has to open."""
+    """Register the app if needed and return the URL the user has to open.
+
+    A server with no OAuth metadata is tried without a token first: DNSniffer and several
+    others serve their public tools that way, and asking for a sign-in they do not have was
+    the whole reason such a connection could not be made.
+    """
     entry = connection(name)
-    meta = metadata(name)
+    try:
+        meta = metadata(name)
+    except McpError as exc:
+        if _saved(name).get("access_token"):
+            raise
+        try:
+            found = probe(name)
+        except McpError:
+            raise exc
+        block = _saved(name)
+        block.update({"open": True, "connected_at": int(time.time())})
+        _save(name, block)
+        config.log("mcp %s: open connection, no sign-in needed" % name)
+        return {"ok": True, "open": True, "tools": len(found),
+                "message": "%s needs no sign-in - connected, %d tools available."
+                           % (entry["label"], len(found))}
     redirect_uri = "http://127.0.0.1:%d/oauth/mcp/%s/callback" % (int(port), name)
     block = _saved(name)
     client_id = block.get("client_id") or ""
@@ -314,7 +357,8 @@ def status(name):
     expires = int(block.get("expires_at") or 0)
     return {"name": name, "label": entry["label"], "url": entry["url"],
             "note": entry.get("note") or "",
-            "connected": bool(block.get("access_token")),
+            "connected": bool(block.get("access_token")) or bool(block.get("open")),
+            "open": bool(block.get("open")),
             "expired": bool(expires and expires < time.time()),
             "connected_at": int(block.get("connected_at") or 0),
             "client_id": block.get("client_id") or ""}
@@ -360,9 +404,10 @@ class Client:
         self._id = 0
 
     def _post(self, payload, timeout=TIMEOUT):
-        headers = {"Authorization": "Bearer " + self.token,
-                   "Accept": "application/json, text/event-stream",
+        headers = {"Accept": "application/json, text/event-stream",
                    "MCP-Protocol-Version": self.protocol or PROTOCOL_VERSION}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         status, hdrs, raw = _request(self.url, payload, headers, timeout=timeout)
@@ -410,11 +455,11 @@ class Client:
 
 
 def session(name):
-    client = Client(name, access_token(name))
+    block = _saved(name)
+    client = Client(name, access_token(name) if block.get("access_token") else "")
     try:
         client.initialize()
     except McpError:
-        block = _saved(name)
         if block.get("refresh_token"):
             client = Client(name, _refresh(name, block)["access_token"])
             client.initialize()

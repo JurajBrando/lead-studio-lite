@@ -16,7 +16,17 @@ from . import config, db, mail
 MAX_PER_TICK = 1          # the worker sends at most one email per tick
 MAX_SEND_ATTEMPTS = 3     # then the enrollment is paused instead of hammering the server
 SEND_RETRY_SECONDS = 900  # first retry after 15 minutes, second after 30
-BOUNCE_RX = re.compile(r"(mailer-daemon|postmaster|no-?reply@|mail delivery (subsystem|system))", re.I)
+BOUNCE_RX = re.compile(r"(mailer-daemon|postmaster|mail delivery (subsystem|system))", re.I)
+# A no-reply address is an automatic acknowledgement ("we received your message"), not a
+# delivery failure and not an answer from a person. It used to count as a bounce, which
+# suppressed a working address for good.
+NOREPLY_RX = re.compile(r"(^|[<\s])(no-?reply|do-?not-?reply|donotreply)[^@\s]*@", re.I)
+BOUNCE_RECIPIENT_RX = re.compile(
+    r"(?:Final-Recipient|Original-Recipient|X-Failed-Recipients)\s*:\s*(?:rfc822\s*;)?\s*"
+    r"<?([^\s<>;,]+@[^\s<>;,]+)>?", re.I)
+ADDRESS_RX = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Bounces that could not be matched to a lead are looked at once, not on every sync.
+_BOUNCES_CHECKED = set()
 # The address in List-Unsubscribe is a mailto with this exact subject, and people also just
 # write "unsubscribe". Honour both instead of filing them as replies.
 UNSUB_SUBJECT_RX = re.compile(r"^\s*(unsubscribe|opt[- ]?out|remove me|take me off)\b", re.I)
@@ -67,6 +77,26 @@ def sent_today(box_id):
                      (box_id, day_start))
 
 
+def sent_today_map():
+    """{mailbox id: messages sent today} in one query - for pages that list every mailbox."""
+    day_start = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
+    return {row["mailbox_id"]: row["n"] for row in db.rows(
+        "SELECT mailbox_id, COUNT(*) AS n FROM sends WHERE status='sent' AND sent_ts>=? "
+        "GROUP BY mailbox_id", (day_start,))}
+
+
+def _lead_counts():
+    by_status = {r["status"]: r["n"] for r in db.rows("SELECT status, COUNT(*) n FROM leads GROUP BY status")}
+    return {"by_status": by_status, "total": sum(by_status.values()),
+            "unverified": db.scalar("SELECT COUNT(*) FROM leads WHERE verify_status='unverified'")}
+
+
+def lead_counts():
+    """Totals over the leads table. Three passes over millions of rows take seconds, and the
+    dashboard asks every 30 s - `db.cached` keeps a slow answer for two minutes."""
+    return db.cached("lead_counts", _lead_counts)
+
+
 def within_window(s):
     sending = s.get("sending", {})
     lt = time.localtime()
@@ -99,6 +129,33 @@ def gap_ready(box, s):
     if jitter:
         wait += random.randint(0, jitter)
     return False, wait
+
+
+def previous_send(en):
+    """The last message this enrollment actually delivered, or None."""
+    if int(en.get("step_no") or 0) <= 0:
+        return None
+    return db.one("SELECT * FROM sends WHERE enrollment_id=? AND status='sent' "
+                  "ORDER BY id DESC LIMIT 1", (en["id"],))
+
+
+def boxes_for(en):
+    """The mailboxes that may send this enrollment's next step, best first.
+
+    A follow-up goes out of the mailbox that sent the step before it: the prospect gets one
+    conversation with one sender, and the reply lands in the inbox that is being watched for
+    it. Only the first step (or a follow-up whose mailbox was removed or switched off) takes
+    part in the rotation.
+    """
+    explicit = en.get("mailbox_id") or 0
+    if explicit:
+        return [box for box in [mailbox_for(explicit)] if box]
+    earlier = previous_send(en)
+    if earlier and earlier.get("mailbox_id"):
+        box = db.one("SELECT * FROM mailboxes WHERE id=? AND active=1", (earlier["mailbox_id"],))
+        if box:
+            return [box]
+    return mailbox_candidates()
 
 
 def next_step(sequence_id, after_no):
@@ -166,8 +223,12 @@ def _tracking_urls(s, token):
     return ("%s/t/o/%s.gif" % (base, token)), ("%s/t/u/%s" % (base, token))
 
 
-def send_for_enrollment(en):
-    """Send the next step for one enrollment. Returns a result dict."""
+def send_for_enrollment(en, box=None):
+    """Send the next step for one enrollment. Returns a result dict.
+
+    `box` is the mailbox the caller already chose (and checked the cap and the gap for);
+    without it the enrollment's own mailbox, or the rotation, decides.
+    """
     s = settings()
     seq = db.one("SELECT * FROM sequences WHERE id=?", (en["sequence_id"],))
     lead = db.one("SELECT * FROM leads WHERE id=?", (en["lead_id"],))
@@ -190,7 +251,9 @@ def send_for_enrollment(en):
         db.update("enrollments", en["id"], {"status": "finished", "finished_ts": db.now()})
         return {"ok": False, "error": "sequence finished"}
 
-    box = mailbox_for(en.get("mailbox_id") or 0)
+    if not box:
+        options = boxes_for(en)
+        box = options[0] if options else None
     if not box:
         db.update("enrollments", en["id"], {"status": "paused", "last_error": "no mailbox"})
         return {"ok": False, "error": "No sending mailbox is configured."}
@@ -246,9 +309,12 @@ def send_for_enrollment(en):
     else:
         send_id = db.insert("sends", record)
 
+    # A follow-up answers the message before it, so mail clients show one conversation.
+    earlier = previous_send(en)
     ok, detail = mail.smtp_send(box, lead["email"], subject, body, html,
                                 unsub_mailto=(box.get("from_email") or ""),
-                                message_id=msg_id, unsub_url=unsub or "")
+                                message_id=msg_id, unsub_url=unsub or "",
+                                in_reply_to=(earlier or {}).get("message_id") or "")
     ts = db.now()
     if ok:
         db.update("sends", send_id, {"status": "sent", "message_id": detail or msg_id,
@@ -325,9 +391,7 @@ def _tick(force=False):
     if not due:
         return {"ok": True, "action": "idle", "reason": "Nothing is due right now."}
     en = due[0]
-    explicit = en.get("mailbox_id") or 0
-    candidates = [box for box in ([mailbox_for(explicit)] if explicit else mailbox_candidates())
-                  if box]
+    candidates = boxes_for(en)
     if not candidates:
         return {"ok": False, "action": "blocked", "reason": "No active mailbox configured."}
     # Skip a mailbox that is at its cap instead of stalling the queue for an hour - the next
@@ -342,7 +406,7 @@ def _tick(force=False):
         ready, wait = gap_ready(box, s)
         if not ready:
             return {"ok": True, "action": "idle", "reason": "Waiting %ss for the next send gap." % wait}
-    res = send_for_enrollment(en)
+    res = send_for_enrollment(en, box=box)
     res["action"] = "sent" if res.get("ok") else "blocked"
     return res
 
@@ -378,10 +442,12 @@ def sync_inbox(box_id=0, days=14):
             is_bounce = bool(BOUNCE_RX.search(m["address"] or "") or
                              BOUNCE_RX.search(m["from"] or "") or
                              mail.AUTOREPLY_RX.search(m["subject"] or "") and "undeliver" in (m["subject"] or "").lower())
-            if not lead and not is_bounce:
-                continue
             if is_bounce and not lead:
+                lead = _bounced_lead(box, m)
+            if not lead:
                 continue
+            if not is_bounce and NOREPLY_RX.search(m["from"] or m["address"] or ""):
+                continue                    # an automatic acknowledgement: not a reply
             ts = db.now()
             # An unsubscribe answer (the List-Unsubscribe mailto, Gmail's one-click, or a
             # plain "unsubscribe" reply) is not a sales reply: suppress, never re-enrol.
@@ -425,6 +491,41 @@ def sync_inbox(box_id=0, days=14):
     return result
 
 
+def _bounced_lead(box, m):
+    """The lead a delivery report is about, when its headers did not say.
+
+    Looks at the report itself: first for the Message-ID of something we sent, then for the
+    address it names. Only a lead this app has actually mailed is accepted, so a stray bounce
+    for somebody else's message can never suppress one of ours.
+    """
+    key = m.get("message_id") or ""
+    if not key or key in _BOUNCES_CHECKED:
+        return None
+    if len(_BOUNCES_CHECKED) > 5000:
+        _BOUNCES_CHECKED.clear()
+    _BOUNCES_CHECKED.add(key)
+    text = mail.fetch_bounce_text(box, key) or ""
+    for mid in re.findall(r"<[^<>\s]+@[^<>\s]+>", text)[:40]:
+        send = db.one("SELECT lead_id FROM sends WHERE message_id=?", (mid,))
+        if send:
+            lead = db.one("SELECT * FROM leads WHERE id=?", (send["lead_id"],))
+            if lead:
+                return lead
+    own = (box.get("from_email") or "").strip().lower()
+    named = list(m.get("failed_recipients") or []) + BOUNCE_RECIPIENT_RX.findall(text)
+    seen = set()
+    for address in (named or ADDRESS_RX.findall(text))[:40]:
+        address = address.strip().strip(".").lower()
+        if not address or address == own or address in seen:
+            continue
+        seen.add(address)
+        lead = db.one("SELECT * FROM leads WHERE email=?", (address,))
+        if lead and db.one("SELECT id FROM sends WHERE lead_id=? AND status='sent' LIMIT 1",
+                           (lead["id"],)):
+            return lead
+    return None
+
+
 def unsubscribe(token):
     send = db.one("SELECT * FROM sends WHERE token=?", (token,))
     if not send:
@@ -451,6 +552,17 @@ def record_open(token):
     return True
 
 
+def click_target(token, url):
+    """`url` when it is a link inside the message `token` was sent with, otherwise ""."""
+    url = str(url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return ""
+    send = db.one("SELECT body FROM sends WHERE token=?", (str(token or ""),))
+    if not send or url not in (send.get("body") or ""):
+        return ""
+    return url
+
+
 def record_click(token):
     send = db.one("SELECT * FROM sends WHERE token=?", (token,))
     if not send:
@@ -466,14 +578,18 @@ def stats():
     ts = int(time.time())
     day_start = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
     week_start = day_start - 6 * 86400
-    by_status = {r["status"]: r["n"] for r in db.rows("SELECT status, COUNT(*) n FROM leads GROUP BY status")}
+    counts = lead_counts()
+    by_status = counts["by_status"]
+    sent_map = sent_today_map()
     boxes = []
     for b in db.rows("SELECT * FROM mailboxes ORDER BY id"):
         boxes.append({"id": b["id"], "name": b["name"], "from_email": b["from_email"],
-                      "daily_limit": b["daily_limit"], "sent_today": sent_today(b["id"]),
+                      "daily_limit": b["daily_limit"], "sent_today": sent_map.get(b["id"], 0),
                       "active": b["active"]})
     return {
-        "leads_total": db.scalar("SELECT COUNT(*) FROM leads"),
+        "offers": db.scalar("SELECT COUNT(*) FROM offers"),
+        "offers_active": db.scalar("SELECT COUNT(*) FROM offers WHERE active=1"),
+        "leads_total": counts["total"],
         "leads_new": by_status.get("new", 0),
         "leads_contacted": by_status.get("contacted", 0),
         "leads_replied": by_status.get("replied", 0),
@@ -492,5 +608,5 @@ def stats():
         "suppressed": db.scalar("SELECT COUNT(*) FROM suppressions"),
         "mailboxes": boxes,
         "sequences": db.scalar("SELECT COUNT(*) FROM sequences"),
-        "unverified": db.scalar("SELECT COUNT(*) FROM leads WHERE verify_status='unverified'"),
+        "unverified": counts["unverified"],
     }

@@ -20,17 +20,20 @@
       </div>
     </div>
 
-    <div class="nav-label">Workspace</div>
-    <div class="nav-item" data-nav="daily"><span class="ico" data-ico="pulse"></span>Daily<span class="count" id="nav-signals">0</span></div>
-    <div class="nav-item" data-nav="dashboard"><span class="ico" data-ico="grid"></span>Dashboard</div>
-    <div class="nav-item" data-nav="leads"><span class="ico" data-ico="users"></span>Leads<span class="count" id="nav-leads">0</span></div>
+    <div class="nav-label">Pipeline</div>
+    <div class="nav-item" data-nav="dashboard" title="Today, signals and running jobs"><span class="ico" data-ico="grid"></span>Overview<span class="count" id="nav-signals">0</span></div>
+    <div class="nav-item" data-nav="radar" title="Step 1 - the offer, the website and the buyer profile"><span class="step">1</span><span class="ico" data-ico="radar"></span>Radar</div>
+    <div class="nav-item" data-nav="leads" title="Step 2 - the companies, the people and their emails"><span class="step">2</span><span class="ico" data-ico="users"></span>Leads<span class="count" id="nav-leads">0</span></div>
+    <div class="nav-item" data-nav="sequences" title="Step 3 - the emails you send"><span class="step">3</span><span class="ico" data-ico="flow"></span>Sequences<span class="count" id="nav-seqs">0</span></div>
+    <div class="nav-item" data-nav="army" title="Step 4 - soldiers send and follow up"><span class="step">4</span><span class="ico" data-ico="army"></span>Army<span class="count" id="nav-army" style="display:none">0</span></div>
+    <div class="nav-item" data-nav="inbox" title="Step 5 - replies and bookings"><span class="step">5</span><span class="ico" data-ico="mail"></span>Inbox<span class="count" id="nav-inbox">0</span></div>
+
+    <div class="nav-label">Data</div>
+    <div class="nav-item" data-nav="domains"><span class="ico" data-ico="globe"></span>Domains<span class="count" id="nav-domains">0</span></div>
     <div class="nav-item" data-nav="osint"><span class="ico" data-ico="shield"></span>OSINT</div>
-  <div class="nav-item" data-nav="domains"><span class="ico" data-ico="globe"></span>Domains<span class="count" id="nav-domains">0</span></div>
-    <div class="nav-item" data-nav="sequences"><span class="ico" data-ico="flow"></span>Sequences<span class="count" id="nav-seqs">0</span></div>
-    <div class="nav-item" data-nav="inbox"><span class="ico" data-ico="mail"></span>Inbox<span class="count" id="nav-inbox">0</span></div>
-    <div class="nav-item" data-nav="offers"><span class="ico" data-ico="tag"></span>Toolbox<span class="count" id="nav-offers">0</span></div>
     <div class="nav-item" data-nav="social"><span class="ico" data-ico="video"></span>Social</div>
     <div class="nav-item" data-nav="ads"><span class="ico" data-ico="target"></span>Ads</div>
+    <div class="nav-item" data-nav="offers"><span class="ico" data-ico="tag"></span>Upgrades<span class="count" id="nav-offers">0</span></div>
     <div class="nav-item" data-nav="agent"><span class="ico" data-ico="sparkles"></span>HYROS AIR Sales Agent</div>
 
     <div class="nav-label">Setup</div>
@@ -48,6 +51,11 @@
   <main class="main" id="main">
     <div id="view"><div class="empty"><p>Loading...</p></div></div>
   </main>
+  <aside class="rail" id="rail">
+    <div class="rail-title">Live</div>
+    <div id="rail-body"><div class="rail-s">Loading...</div></div>
+  </aside>
+  <button id="rail-toggle" title="Hide the live panel">›</button>
 </div>
 
 <div id="modal-root"></div>

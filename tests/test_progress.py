@@ -62,7 +62,37 @@ class ProgressTests(unittest.TestCase):
         snapshot = progress.snapshot(run_id)
         self.assertEqual(snapshot["percent"], 0)
         self.assertEqual(snapshot["eta"], 0)
-        self.assertEqual(snapshot["rows"], 1200)
+        self.assertEqual(snapshot["read_rows"], 1200)
+        self.assertEqual(snapshot["rows"], 0)
+
+    def test_a_streamed_import_shows_the_reader_percent(self):
+        run_id = progress.start("big.csv")
+        progress.update(run_id, 250, 1000, "reading the file", 250)
+        progress.update(run_id, 200, 0, "importing", 200)   # no row total known
+        snapshot = progress.snapshot(run_id)
+        self.assertEqual(snapshot["percent"], 25)
+        self.assertEqual(snapshot["total"], 0, "bytes must not be shown as a row total")
+        self.assertGreater(snapshot["eta"], 0)
+
+    def test_cancelling_marks_the_run_and_keeps_its_counts(self):
+        run_id = progress.start("big.csv")
+        progress.update(run_id, 10, 100, "importing", 5)
+        self.assertTrue(progress.request_cancel(run_id))
+        snapshot = progress.snapshot(run_id)
+        self.assertTrue(snapshot["cancel"])
+        self.assertEqual(snapshot["phase"], "stopping")
+        self.assertEqual(snapshot["imported_rows"], 5)
+        self.assertTrue(progress.is_cancelled(run_id))
+        progress.finish(run_id, result={"ok": True, "cancelled": True}, cancelled=True)
+        snapshot = progress.snapshot(run_id)
+        self.assertEqual(snapshot["phase"], "cancelled")
+        self.assertTrue(snapshot["finished"])
+        self.assertEqual(snapshot["error"], "")
+
+    def test_cancelling_a_finished_run_is_refused(self):
+        run_id = progress.start("done.csv")
+        progress.finish(run_id, result={"ok": True})
+        self.assertFalse(progress.request_cancel(run_id))
 
 
 if __name__ == "__main__":

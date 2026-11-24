@@ -1,3 +1,342 @@
+## [Unreleased]
+
+### Added
+
+- **Radar: the Assistant read works on any website, and every hunt starts from the whole job
+  history.** Page text now drops HTML comments, `<script>` / `<style>` / template blocks and
+  tag fragments whose quoted attributes contain `>` - the leak that turned a shop's Alpine.js
+  markup into "keywords" - so the words it reads are words the page shows: nav, consent,
+  policy and code tokens are filtered, accents count once (`zaluzie` == `žalúzie`) and the
+  business name comes from the title part that matches the domain instead of a slogan. A
+  problem line is only read when the sentence states a buyer's pain: cookie, terms, privacy
+  and thank-you text and "you can ..." promises are rejected, a real pain word is required,
+  and an unknown category no longer splits a stray sentence into junk pains. A price under 10
+  is ignored unless it is monthly, so "$5.00 shipping" is not the offer's price. Separately,
+  `daily.signals_summary` keeps domains and search-engine words out of the words it counts,
+  and the Assistant read, the offer card and every hunt all read that summary: the result
+  shows a "From your job results" block, the Hunt card shows the counts it targets, and each
+  run records them in `params.targeting`.
+- **Radar: Hunt now targets from the Assistant's read.** The read writes a `targeting` block on
+  the offer card - who buys, the use cases it clusters, the pains, the tools that create the
+  problem, which signal kinds matter and the markets it names - and `radar.assistant_view`
+  feeds it to every stage: the gate accepts a company whose own words match a use case, a
+  pain or a need even when it misses the card's keywords, fit counts the use cases, the pain
+  profile uses the read's needs and kind weights, and the reason line reports "their site
+  talks about ...". Each run records what it targeted in `params.targeting`, the Hunt card
+  shows it, and the first phase names it. Saving the card dialog no longer drops the read:
+  `hunt.save_card` merges the form over the stored card instead of replacing it.
+- **Radar: the Assistant reads one link into the whole Radar view** (`engine/radar_brief.py`,
+  `POST /api/radar/assistant`). Paste a business link and it fetches the home page plus the
+  first `/about`, `/pricing`, `/team` and `/contact` it finds, extracts what the business
+  sells and to whom, lists its product keywords, searches the businesses that come up as
+  "alternatives to" it, reads and scores those candidates, keeps the closest, finds the team
+  named on the site and the mailboxes it publishes, merges the rivals the site itself names,
+  matches the pains the offer answers, and scores six campaign ideas with a subject and a
+  body for each. Every step is shown with its own line and what it actually found. Plain
+  rules, no LLM: a field the site does not show stays empty. With an offer selected the read
+  is merged onto that offer's card and fills only empty fields; without one it writes
+  nothing. The Assistant also carries the outreach list (the hunt's company index, fit
+  scores, ranking and the addresses it found) and drafts the first email from the top brief
+  with the company's own opening line. The free-form workspace chat moved here from the
+  Overview and says so when no LLM provider is set. The separate "Offers under management"
+  card is gone: the offer picker and the Edit / Delete / New offer buttons above it already
+  do that, and the delete explanation is now the button's tooltip.
+- **Page text is decoded by the page, not by a fixed list** (`net.decode`): a site that
+  declares `utf-8` but is served as legacy Windows-1250 (or the other way round) no longer
+  comes back with the accented words mangled into replacement characters.
+- **Domains tab: the catalogue against a downloaded live-websites list** (`engine/live_list.py`,
+  job `domains_live_list_all`, `live_list` in the Domains stats). DNSniffer's Live Websites
+  Dataset is a ZIP of CSV parts with one `Domain` column - about 285 million names, 7.3 GB
+  unzipped. They do not fit in memory, and a Bloom filter that size takes close to an hour to
+  fill, so the pass runs the other way round: the catalogue is read into a set and the file is
+  streamed through it once. Exact, no index to build or keep in date, no key, no quota - ten to
+  fifteen minutes for the full export, reading the file where it is. A catalogue domain the
+  list does not contain is quarantined (junk rows keep their own reason), the leads table is
+  never touched, a domain that already produced a lead is kept, and `Allow back` restores the
+  quarantine. The tile starts from the file already downloaded on this computer and accepts
+  any other ZIP, folder or CSV; `Preview` reads the whole file and removes nothing.
+- **Domains tab: one "Run on every domain" card.** Cleaning the junk, the DNSniffer live
+  check and the live-websites list were separate cards with their own descriptions; all seven
+  catalogue passes now sit in one card as tiles with their options inline (DNS on/off for the
+  cleaner, certificate and re-check for DNSniffer, the API key, the file path and preview for
+  the list), and the four enrichment passes follow underneath.
+- **Mailboxes: bulk setup from a senders sheet, a real login test and a real send**
+  (`engine/mailboxes.py`, jobs `mailboxes_test_all` / `mailboxes_send_test`, routes
+  `/api/mailbox/import` and `/api/mailbox/dns`). A Manyreach export carries no passwords, so
+  the hundred mailboxes it created could never sign in. The new card on the Mailboxes page
+  reads the provider sheet (email, password, smtp_host/port/security, imap_host/port,
+  connect_now), fills the mailbox that already has the address instead of duplicating it,
+  never blanks a saved password, maps `SSL/TLS` to SSL on 465 and STARTTLS on 587, and only
+  brings `connect_now = yes` rows live unless every row is asked for. **Test every login**
+  signs in over SMTP and IMAP and stores the result on the card; **Send a real test from
+  each** puts one short message in each inbox, spaced out; **Check SPF / DKIM / DMARC**
+  verifies the provider DNS sheet live - the SPF include, the three `szn*.domainkey` CNAMEs,
+  DMARC, and old leftover records.
+  The import can also put the sheet's password into every other `.eu` Seznam mailbox that
+  has none and switch them on, since one Seznam account holds aliases on many of its sender
+  domains; the login test then runs six at a time and pauses a box whose login the server
+  rejects, so a dead alias never sits in the sending rotation.
+- **Domains tab: check against DNSniffer's live index** (`engine/dnsniffer.py`, job
+  `domains_dnsniffer_all`). Walks the catalogue against DNSniffer's index of about 380
+  million domains seen in zone files and Certificate Transparency and quarantines the rows
+  it does not list, in the same `domains_dropped` table as the junk cleaner - so a later
+  import cannot add them back, and `Allow them back` restores them. With an API key
+  (Settings > Connectors, or the field on the card) each check is one exact
+  `GET /api/v1/domains/<name>`, and only a 404 counts as missing. Without a key the free
+  public MCP tool `search_domains` is used: a substring search capped at 500 rows, so an
+  answer the server truncates is counted as "unknown" and never removed. The optional
+  certificate rule also removes an indexed domain that never showed a certificate; it is
+  off by default, because the certificate column has gaps (DNSniffer's own domain has none).
+  This is a "seen live" test, not an HTTP fetch. The leads table is never touched, a domain
+  that already has a lead is kept, errors, timeouts and rate limits remove nothing, and a
+  second press continues where the last run stopped. `Preview` checks a sample only.
+- **MCP: a server that needs no sign-in can connect** (`engine/mcp_client.py`). `begin()`
+  demanded OAuth metadata and stopped at the first 404, so DNSniffer - whose public tools
+  take no token - could never be added; and a connection without a token still sent
+  `Authorization: Bearer `, which the server saw as a bad credential. A server with no
+  metadata is now probed without a token, and on success the connection is saved as open
+  (no browser tab, no token written); the header is only sent when there is a token. Adds
+  the `dnsniffer` preset (`https://dnsniffer.com/mcp`).
+- **Leads tab: "Clean the list first"** (`engine/lead_clean.py`, job `leads_clean_all`).
+  Removes what can never start a conversation: a consumer mailbox (gmail, yahoo, seznam and
+  about seventy more) with no website or own domain behind it, an address that is not an
+  address, and rows with no email, company, site or phone at all. A company name, an
+  industry, a job title or a city alone does not make a business - a personal gmail in a
+  government or fishery import goes - while a gmail lead that names a website stays, which
+  is the ordinary owner-with-gmail case. `junk_reason` holds the rule; the walk
+  pushes it into SQL and reads only candidate rows, in bounded id windows of 200k, so 65M
+  leads are one pass rather than a Python dict per row and Cancel stays responsive.
+  Removed leads are copied whole into
+  `leads_dropped`, with the reason, and their sends, replies, enrollments and signals go
+  with them exactly like the Delete button; `Allow them back` re-inserts them. `Preview`
+  changes nothing and reports the count per rule.
+- **Import contacts: "Only business contacts"** (`import_rows(..., business_only=True)`, and
+  `business_only` on both import routes). While a file is read, a row the Leads cleaner would
+  drop is counted in `not_business` instead of stored - a private mailbox with no website and
+  no own domain, an address that is not an address, and a row that is nothing but a name. Off
+  by default, so every existing import behaves as before; the checkbox sits next to "Only rows
+  that have an email" and the result line reports how many were skipped.
+- **Domains tab: "Clean the catalogue first"** (`engine/domain_clean.py`, job
+  `domains_clean_all`). Before any pass walks the list, this removes the rows that are not
+  domains at all - phone numbers and addresses in the domain column, wildcards, IP
+  addresses, reserved and test names - and, with DNS on, names that answer NXDOMAIN. One
+  A/AAAA lookup per domain, 64 in flight; a name that exists but has no address yet, a
+  timeout and a refusing resolver all keep their row. Only `domains` is touched: the leads
+  table is never changed, and removed domains are copied into `domains_dropped`, which
+  every import and `ensure_domain` now skips, so a feed cannot silently add them back.
+  `Preview` estimates the dead share on a sample and changes nothing; `Clean` runs the
+  whole catalogue as a cancellable background job with a progress bar; `Allow them back`
+  clears the quarantine. 3.6M rows at roughly 4 ms per lookup.
+- **Qualification: buying signals per offer, no model calls** (`engine/qualify.py`,
+  `engine/jobs/qualify.py`). The database holds millions of contacts and nothing until
+  now decided which of them deserved an email - every source optimised for volume. The
+  new job reads a lead's site once and checks it against 37 signals grouped into eight
+  cohorts, one per offer actually sold: trades quoting by hand (QuoteIQ Pro, plus
+  Ataraxis when the phone is the only way in), clinics with no online booking (Dermis,
+  plus HYROS when they are already buying ads), ads running with no attribution (HYROS
+  Tracking), agencies with nothing capturing their leads (HighLevel SaaS Pro, or
+  Unlimited when they white-label, plus HYROS AIR when they advertise for themselves),
+  US companies at referral scale (micro1), own-brand ecommerce also sold on
+  marketplaces (Red Points) and manufacturers (Modulario). The offer in the CSV is the
+  bundle to pitch, not just the cohort's name.
+
+  No LLM and no API key is involved, so it costs one HTTP request per domain and can
+  run over the whole database. A domain is read once however many contacts sit behind
+  it. Parked, placeholder, contentless, free-host and unreachable sites are
+  disqualified before anything is scored, and - unless `park_disqualified` is off -
+  given `status='unqualified'`, which every existing filter, export and enrollment
+  query already skips. Nothing is deleted; setting the status back puts the lead in
+  play. The rest get a score, a cohort, a `q:` tag, a `qualified` signal and a row in
+  `data/qualified/qualified_<date>.csv`.
+
+  Two cohorts (`paid_ads`, `liveness`) only corroborate: they add to the score but
+  never name the offer, because a pixel proves a budget, not a problem. Ties between
+  the rest go to the cohort that identifies who the company is over the one that
+  identifies what it does.
+
+  Unlike `hot_list`, which needs a change between two crawls, this fires on the site's
+  current state, so a lead imported five minutes ago can be qualified immediately.
+  Documented in `docs/QUALIFY.md`; 32 offline tests in `tests/test_qualify.py`.
+- `crawl.robots_allowed(url)` - a public wrapper over the per-run robots cache, so
+  other modules can honour robots.txt without reaching into `crawl._ROBOTS`.
+
+### Changed
+
+- **Radar: Edit offer and the offer/buyer card are one dialog.** The always-open card is gone
+  from the page; `Edit offer` opens it over Radar, filled with what the Assistant's read saved
+  on the offer - kind of offer, buyer, problem, price, countries, industries, keywords, pains,
+  already solved by, competitors and the score weights. `Save card` writes them back and
+  closes; `Analyze with AI` and `Apply to card` work inside the dialog, and Hunt still saves
+  the card before it starts.
+- **Leads tab: the export buttons now say what they do.** `CSV`, `Parquet` and `DuckDB` on the
+  Leads page read `Export CSV`, `Export Parquet` and `Export DuckDB`; the routes, the handlers
+  and the hint that lists the import formats are unchanged.
+- **Leads tab: Clean and OpenStreetMap are buttons now.** The two cards that used to fill
+  the page sit behind `Clean the list` and `Find businesses (OSM)` in the header, and each
+  opens in a dialog over the list. The quarantine count, the preview/clean/allow-back
+  buttons, the job progress bar and the OSM search fields moved with them unchanged.
+
+### Fixed
+
+- **Radar: a problem line read off a page is the company's own sentence, not a quote or a menu.**
+  Lifted text is now checked as a written sentence: a first-person customer review ("I do not
+  feel them ... !!") and a row of menu labels run into the next sentence ("Prototype sharing
+  permissions Share prototypes with ...") are no longer shown as what the business solves, and
+  a sentence that opens with "And" / "But" / "So" is shown from its first real word. Typed
+  offers keep the looser check, so an offer paragraph that lacks a closing period still reads.
+  The same read no longer turns "Meet Eron" or "Lead Product" into people, and the rival list
+  drops button labels ("Run Dev Mode", "VS Code"); page text that runs one paragraph into the
+  next still yields its problem sentence.
+- **Radar: a page that prints its headings twice no longer spoils the problem line.** It came
+  out as a 140-character cut that began with the page's own heading repeated ("The problem we
+  solve The problem we solve ...") and stopped mid-word. It now drops repeated sentences and
+  headings, starts at the problem sentence, stops at the next section heading and is cut on a
+  word. Generic filler ("only", "keywords", "trusted", "play") no longer reaches the keywords.
+- **Radar: Edit offer showed empty fields and the next Save wiped them.** The editor
+  filled its form from the short list the Dashboard sends (`id` and `name` only), so the
+  description, the site link, the keywords and the pitch looked gone; saving then wrote those
+  blanks over the row. It now loads the full record from `/api/offers`, and `offers.save`
+  writes only the keys the caller sends, so a partial save cannot blank a column.
+- **The Dashboard offer step never ticked.** It read `stats.offers`, which `pipeline.stats()`
+  never returned; the count is there now, with `offers_active` beside it.
+
+- **A mailbox with an empty password reported "SMTP works".** `mail.smtp_open` skipped
+  `login()` when the password was blank and returned the open connection as a success, so
+  the test said the mailbox was ready and the first real send failed. It now refuses with
+  "No password is saved for ...". Saving a mailbox also copies one typed password into both
+  SMTP and IMAP - before, Seznam answered IMAP with
+  `[AUTHENTICATIONFAILED] Empty password` even though the same password was saved for SMTP.
+- **CSV and Excel imports from a path have no size limit.** A CSV was read into memory whole
+  and refused above 200 MB, so an 18 GB file could not be imported at all. Both formats now
+  stream row by row from the file - a small sample at the start picks the encoding, the
+  delimiter and the header - skip straight past already-imported rows when resuming, and use
+  the file's byte position as the progress total. JSON is the only format still parsed whole,
+  so its 200 MB guard stays, with a message that says to convert it.
+- A file over 40 MB dropped on the import dialog now points to **File on this computer**
+  instead of being read inside the page (a request body is 64 MB and base64 inflates it); that
+  tab reads the file where it lies and has no size limit.
+
+- **A `website` column is stored as `website` again.** It used to be folded into `domain` and
+  silently lost whenever the file also had a `domain` column, which made a gmail lead with a
+  site look site-less to the cleaner; the domain is now derived from the site instead.
+- **The Leads tab's country filter list no longer takes four minutes on a big database.** It
+  grouped with a Python function called once per row; SQLite now groups the raw column and the
+  groups are normalised afterwards - a couple of seconds instead of minutes on 65.7M leads.
+
+## [1.37.1] - 2026-11-24
+
+### Changed
+
+- **Leads > LinkedIn data opens the subscription page.** The leads.cm table (about 105 million
+  contacts) is a paid service; this build does not carry the downloader, so the button opens the
+  offer page and the LinkedIn endpoints answer with that link.
+
+## [1.37.0] - 2026-11-17
+
+A review pass over the whole app: the secrets the UI was handed, the jobs that failed every
+day, the imports that started over after a crash, and the queries that made the dashboard
+slow on a database with millions of leads.
+
+### Security
+
+- **`/api/state` handed out every key and token.** Only the Hunter, AI and Serper keys were
+  stripped; the Manyreach API key, the MCP access and refresh tokens, the Metricool token, the
+  Treg key and the ad/HYROS keys all went to the browser in full. Any field whose name ends in
+  `key`, `token`, `secret`, `pass` or `pwd` is now blanked and replaced by a `has_<name>` flag,
+  wherever it sits in the settings tree. Saving a blank secret still keeps the stored one, so
+  the Settings forms work unchanged.
+- **The read endpoints needed no session token.** Only the `Host` header stood between any
+  program on this machine - or anything reaching the port through a tunnel that rewrites
+  `Host` - and the whole lead list, the settings and the logs. Every `/api/...` GET and the
+  four export links now require the token, the same as the write endpoints; the links the
+  browser opens itself carry it as `?t=`.
+- **`/t/c/<token>?u=` was an open redirect.** It forwarded to any URL without looking at the
+  token - on a public tracking domain, a good name to borrow for phishing. The target now has
+  to be a link that really is in the message that token belongs to.
+- **`engine/external.py` had `C:\Users\you\...` hardcoded**, which `tools/check_release.py`
+  refuses to publish. The two tool folders are worked out from where the app is installed;
+  `external.studio` / `external.clean` in settings.json, or `LS_STUDIO_DIR` / `LS_CLEAN_DIR`,
+  still point anywhere else.
+
+### Fixed
+
+- **Starting the app twice ran two send workers on one database.** The second copy got its own
+  port, its own worker and its own scheduler, and the same prospect could be mailed twice. The
+  first copy now takes an OS lock on `data/app.lock` and writes its port; a second start opens
+  the copy that is running and exits. The lock is released by the system, so a crash never
+  locks the app out. `LS_ALLOW_MULTI=1` overrides it.
+- **Saving settings failed with `WinError 32`.** Nothing serialised the read-modify-write, every
+  request reads `settings.json`, and all writers shared one `settings.json.tmp`. A failed save
+  could lose a freshly refreshed OAuth token. Reads and writes are now serialised in-process,
+  the temporary file is per-writer, and a replace blocked by another process is retried.
+- **An import died on `database is locked`.** A long job can hold the write lock past the 30 s
+  busy timeout. Writes now roll back and retry with a growing wait, which also keeps a failed
+  statement from leaving an open transaction that locks everybody else out.
+- **A crashed import started over from row 0.** The error path wrote the starting row back over
+  the state, throwing away every checkpoint of the run that had just failed. The checkpoints
+  are left alone now, and each one flushes the pending rows first, so it only ever covers rows
+  that are actually stored - no gap on resume, no duplicates.
+- **The in-file duplicate check could exhaust memory.** A streamed DuckDB or Parquet source
+  reports no row count, so the "big file" switch never came on. The set of identity keys is now
+  capped at two million; past that the unique email index catches repeats.
+- **Bounces were dropped and acknowledgements were treated as bounces.** A delivery report was
+  matched to a lead only through reply headers, which Exchange, Postfix and others do not send,
+  so those addresses kept getting follow-ups. The report itself is now read for our Message-ID
+  or for `Final-Recipient` / `X-Failed-Recipients`, and only a lead this app has actually mailed
+  is accepted. A message from a `no-reply@` address is an automatic acknowledgement: it no
+  longer counts as a bounce (which suppressed a working address for good) or as a reply.
+- **Follow-ups were not threaded and could come from another mailbox.** Step 2 and 3 now go out
+  of the mailbox that sent step 1, as a reply to the message before it, so the prospect sees one
+  conversation with one sender and the answer lands in the inbox being watched for it. Step 1
+  still spreads across every active mailbox.
+- **The `site_profile` job failed every day** with `no such column: excluded.platforms`:
+  `CREATE TABLE IF NOT EXISTS` leaves a table from an older version as it was, so `platforms`,
+  `favicon_hash` and `rdap` were never added. They are added on start now, and `platforms` is
+  actually written - it was missing from the insert as well.
+- **`profile_new` profiled the same twenty domains forever.** It took bare-domain leads without
+  skipping the ones already done, so the rest of the list was never reached. Domains already in
+  `osint_domains` are skipped, and one that cannot be reached is recorded as tried.
+- **`scam_radar` and `dork_sweep` failed daily.** Both ship switched on with empty parameters,
+  and both raised - a traceback in the log and a red *error* on Automation every morning. With
+  nothing to work on they now report *skipped, not set up yet* and say which parameter to fill
+  in. Same for certificate discovery.
+- **"Delete all data" left the import bookmarks behind**, so importing the same file again
+  continued from the saved row and skipped everything before it.
+
+### Performance
+
+- **The dashboard asked for everything every 30 seconds.** `/api/state` ran eleven queries per
+  sequence and one per mailbox - with 100 imported campaigns and 876 senders, over a thousand
+  queries a refresh. It is five grouped queries for all sequences and one for all mailboxes now.
+- **Counts over the big tables are remembered**, but only when they are slow to work out (over
+  150 ms): lead totals for two minutes, the Leads country and source filter lists for ten. A
+  small database is always counted fresh, and an import, a delete or a status change clears the
+  memory at once.
+- **The exports no longer build the whole file in memory.** CSV is streamed to the browser in
+  batches of 5 000 rows; Parquet and DuckDB are written to a temporary file (through Arrow, or a
+  bulk CSV load when pyarrow is missing - `executemany` into DuckDB took minutes) and streamed
+  from there. Verified at 60 000 leads: quotes, commas and newlines survive the round trip.
+
+### Added
+
+- `engine/instance.py` - the single-instance lock described above.
+- `db.cached()` / `db.cache_clear()` - remember an answer only if it was slow.
+- `pipeline.sent_today_map()`, `pipeline.lead_counts()`, `pipeline.boxes_for()`,
+  `pipeline.click_target()`, `mail.fetch_bounce_text()`.
+- `importer.iter_export_csv()`, `importer.export_parquet_file()`,
+  `importer.export_duckdb_file()`, `importer.iter_lead_batches()`.
+
+### Notes
+
+- A script of your own that reads the local API with GET now needs the `X-LS-Token` header
+  (the token is in the `ls-token` meta tag of the page, and in `data/settings.json`).
+- A follow-up waits if the mailbox that sent step 1 is at its daily cap; it does not switch
+  sender to get around it.
+- Counts on the dashboard can lag up to two minutes behind a change made outside the app's own
+  import, delete and status actions.
+- The Windows file lock, the `WinError 32` retry and bounce reading against a real IMAP server
+  were not exercised on Windows - the test run was Linux with mocked mail.
+
 ## [1.36.3] - 2026-11-16
 
 ### Fixed

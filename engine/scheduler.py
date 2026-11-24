@@ -18,7 +18,7 @@ import traceback
 
 from . import config, db, net
 from . import jobs as registry
-from .jobs.base import Context
+from .jobs.base import Context, JobCancelled
 
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 _lock = threading.Lock()
@@ -144,6 +144,86 @@ def list_jobs():
     return out
 
 
+_LIVE = {}
+_LIVE_LOCK = threading.Lock()
+
+
+class _Sink(list):
+    """A log sink that also keeps the tail where `live()` can read it."""
+
+    def __init__(self, key, outer=None):
+        list.__init__(self)
+        self.key = key
+        self.outer = outer
+
+    def append(self, line):
+        list.append(self, line)
+        if len(self) > 400:
+            del self[:100]
+        if self.outer is not None:
+            try:
+                self.outer.append(line)
+            except Exception:                         # noqa: BLE001
+                pass
+
+
+def set_progress(key, done=None, total=None, phase=None):
+    """How far a running job has got. Counters never move backwards."""
+    with _LIVE_LOCK:
+        item = _LIVE.get(key)
+        if not item:
+            return
+        p = item["progress"]
+        if total is not None:
+            p["total"] = max(0.0, float(total))
+        if done is not None:
+            p["done"] = max(p["done"], max(0.0, float(done)))
+        if phase:
+            p["phase"] = str(phase)[:120]
+        p["at"] = time.time()
+
+
+def request_cancel(key):
+    """Ask a running job to stop. It stops where it next checks - nothing is killed."""
+    with _LIVE_LOCK:
+        item = _LIVE.get(key)
+        if not item:
+            return False
+        item["cancel"] = True
+        return True
+
+
+def is_cancelled(key):
+    with _LIVE_LOCK:
+        item = _LIVE.get(key)
+        return bool(item and item.get("cancel"))
+
+
+def live():
+    """Jobs running at this moment, newest first, with progress and the tail of their log."""
+    now = int(time.time())
+    with _LIVE_LOCK:
+        out = []
+        for key, item in _LIVE.items():
+            p = item["progress"]
+            total, done = p["total"], p["done"]
+            percent = int(min(100, round(done * 100.0 / total))) if total else 0
+            elapsed = max(0, now - item["started"])
+            eta = 0
+            if total and done and elapsed:
+                rate = done / max(0.001, float(elapsed))
+                if rate:
+                    eta = int(max(0, (total - done) / rate))
+            out.append({"key": key, "name": item["name"], "trigger": item["trigger"],
+                        "started_ts": item["started"], "elapsed": elapsed,
+                        "percent": percent, "done": done, "total": total,
+                        "phase": p["phase"], "eta": eta,
+                        "cancel": bool(item.get("cancel")),
+                        "lines": list(item["sink"])[-40:]})
+    out.sort(key=lambda r: -r["started_ts"])
+    return out
+
+
 def run_job(key, trigger="manual", params=None, log_sink=None):
     job = registry.by_key(key)
     if not job:
@@ -164,24 +244,35 @@ def run_job(key, trigger="manual", params=None, log_sink=None):
 
     db.execute("UPDATE jobs SET running=1 WHERE key=?", (key,))
     started = db.now()
-    ctx = Context(job, merged, log_sink=log_sink)
+    sink = _Sink(key, log_sink)
+    with _LIVE_LOCK:
+        _LIVE[key] = {"name": job.name, "trigger": trigger, "started": started, "sink": sink,
+                      "cancel": False,
+                      "progress": {"done": 0.0, "total": 0.0, "phase": "starting",
+                                   "at": time.time()}}
+    ctx = Context(job, merged, log_sink=sink)
     status, summary, error = "ok", {}, ""
     try:
         result = job.run(ctx) or {}
         if result.get("ok") is False:
             status, error = "error", str(result.get("error") or "job reported failure")
         summary = result
+    except JobCancelled:
+        status, error = "cancelled", "stopped on request"
+        ctx.log("CANCELLED on request")
     except Exception as exc:                          # noqa: BLE001
         status, error = "error", str(exc)
         ctx.log("FAILED: %s" % exc)
         ctx.log(traceback.format_exc()[-1500:])
         config.log("job %s failed: %s\n%s" % (key, exc, traceback.format_exc()))
     finished = db.now()
+    with _LIVE_LOCK:
+        _LIVE.pop(key, None)
 
     try:
-        summary_text = json.dumps(summary, ensure_ascii=False, default=str)[:1000]
+        summary_text = json.dumps(summary, ensure_ascii=False, default=str)[:8000]
     except (TypeError, ValueError):
-        summary_text = str(summary)[:1000]
+        summary_text = str(summary)[:8000]
     log_text = "\n".join(ctx.logs)[-20000:]
     db.insert("runs", {"job_key": key, "started_ts": started, "finished_ts": finished,
                        "status": status, "summary": summary_text, "log": log_text})

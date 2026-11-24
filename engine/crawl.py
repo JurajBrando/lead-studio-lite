@@ -178,6 +178,11 @@ class Robots:
 _ROBOTS = Robots()
 
 
+def robots_allowed(url, agent="LeadStudioLite"):
+    """Public wrapper over the per-run robots cache, for other modules that fetch pages."""
+    return _ROBOTS.allowed(url, agent)
+
+
 # --------------------------------------------------------------------- crawl
 def fetch_page(url, timeout=15):
     body = net.fetch(url, timeout=timeout, retries=0)
@@ -220,7 +225,7 @@ def crawl_domain(domain, max_pages=4, respect_robots=True, pause=0.6):
         try:
             start = "http://" + domain
             home = fetch_page(start)
-        except net.NetError as exc:
+        except (net.NetError, ValueError, OSError) as exc:
             result["error"] = str(exc)
             return result
 
@@ -236,7 +241,7 @@ def crawl_domain(domain, max_pages=4, respect_robots=True, pause=0.6):
         time.sleep(max(0.0, pause))
         try:
             body = fetch_page(url)
-        except net.NetError:
+        except (net.NetError, ValueError, OSError):
             continue
         pages.append((url, body))
         emails.extend(decode_emails_in_html(body))

@@ -48,6 +48,13 @@ def ensure_tables():
                "emails TEXT DEFAULT '', phones TEXT DEFAULT '', text TEXT DEFAULT '', "
                "platforms TEXT DEFAULT '', favicon_hash TEXT DEFAULT '', rdap TEXT DEFAULT '', "
                "fetched_ts INTEGER DEFAULT 0)")
+    # `CREATE TABLE IF NOT EXISTS` leaves a table from an earlier version as it was: one made
+    # before these columns existed has to get them here, or every profile fails with
+    # "no such column: excluded.platforms".
+    existing = {row["name"] for row in db.rows("PRAGMA table_info(osint_domains)")}
+    for column in ("platforms", "favicon_hash", "rdap"):
+        if column not in existing:
+            db.execute("ALTER TABLE osint_domains ADD COLUMN %s TEXT DEFAULT ''" % column)
 
 
 def _key(value):
@@ -223,12 +230,13 @@ def profile(domain, timeout=20):
            "text": " ".join(texts)[:4000], "platforms": ",".join(platform),
            "fetched_ts": db.now()}
     db.execute("INSERT INTO osint_domains (domain, title, description, business, emails, phones, "
-               "text, fetched_ts) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET "
+               "text, platforms, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?) "
+               "ON CONFLICT(domain) DO UPDATE SET "
                "title=excluded.title, description=excluded.description, business=excluded.business, "
                "emails=excluded.emails, phones=excluded.phones, text=excluded.text, "
                "platforms=excluded.platforms, fetched_ts=excluded.fetched_ts", (
                    domain, row["title"], row["description"], row["business"], row["emails"],
-                   row["phones"], row["text"], row["fetched_ts"]))
+                   row["phones"], row["text"], row["platforms"], row["fetched_ts"]))
     if cleaned:
         db.execute("UPDATE leads SET domain=? WHERE lower(email) LIKE ? AND coalesce(domain,'')=''",
                    (domain, "%@" + domain))
@@ -238,13 +246,21 @@ def profile(domain, timeout=20):
 def profile_new(limit=20):
     """Profile domains that have a lead with no email - the gap this closes."""
     ensure_tables()
-    rows = db.rows("SELECT DISTINCT domain FROM leads WHERE coalesce(domain,'')<>'' "
-                   "AND coalesce(email,'')='' LIMIT ?", (int(limit),))
+    # Only domains that were never looked at: without the NOT IN this picked the same first
+    # twenty on every run and the rest of the list was never reached.
+    rows = db.rows("SELECT DISTINCT lower(domain) AS domain FROM leads "
+                   "WHERE coalesce(domain,'')<>'' AND coalesce(email,'')='' "
+                   "AND lower(domain) NOT IN (SELECT domain FROM osint_domains) LIMIT ?",
+                   (int(limit),))
     done = []
     for row in rows:
         try:
             done.append(profile(row["domain"]))
         except (ValueError, urllib.error.URLError, OSError):
+            # Not a usable domain, or nothing answers there. Remember that it was tried, so
+            # it does not take a place in every future run.
+            db.execute("INSERT OR IGNORE INTO osint_domains (domain, fetched_ts) VALUES (?,?)",
+                       (row["domain"], db.now()))
             continue
     return {"ok": True, "profiled": len(done), "domains": done[:20]}
 

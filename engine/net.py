@@ -57,6 +57,36 @@ def normalise_country(value):
     return COUNTRY_ALIASES.get(text.lower(), text)
 
 
+COUNTRIES = frozenset(COUNTRY_ALIASES.values())
+COUNTRY_ALIASES_BY_LENGTH = sorted(COUNTRY_ALIASES, key=len, reverse=True)
+
+
+def known_country(value):
+    """The canonical country a value names, or '' when it names none.
+
+    normalise_country() passes unknown text straight through, which is right for a field a
+    person typed and wrong for a page: a sentence starting with "Marketingove cookies" used
+    to read as a country. This one answers only for a real country.
+    """
+    text = normalise_country(value)
+    return text if text in COUNTRIES else ""
+
+
+def country_in(value):
+    """The first country a free string names ('Remote - USA', 'AT, DE', 'PT'), else ''."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    low = " %s " % re.sub(r"[^a-z0-9.]+", " ", raw.lower()).strip()
+    for alias in COUNTRY_ALIASES_BY_LENGTH:
+        if len(alias) > 2 and (" %s " % alias) in low:
+            return COUNTRY_ALIASES[alias]
+    for token in re.findall(r"[A-Za-z.]+", raw):
+        if token.isupper() and token.lower() in COUNTRY_ALIASES:
+            return COUNTRY_ALIASES[token.lower()]
+    return ""
+
+
 class NetError(Exception):
     def __init__(self, message, status=0, url=""):
         super().__init__(message)
@@ -119,10 +149,26 @@ def fetch(url, timeout=45, headers=None, retries=2, method=None, data=None):
 
 def text(url, **kw):
     raw = fetch(url, **kw)
-    for enc in ("utf-8", "cp1250", "cp1252", "latin-1"):
+    return decode(raw)
+
+
+CHARSET_CUE = re.compile(rb"charset\s*=\s*[\"']?\s*([A-Za-z0-9_\-]+)", re.I)
+
+
+def decode(raw, charset=""):
+    """Bytes to text. Many pages declare the wrong charset, so clean UTF-8 wins first."""
+    if not raw:
+        return ""
+    order = ["utf-8"]
+    cue = CHARSET_CUE.search(raw[:8192])
+    declared = cue.group(1).decode("ascii", "ignore") if cue else (charset or "")
+    if declared and declared.lower() not in ("utf-8", "utf8"):
+        order.append(declared)
+    order += ["cp1250", "cp1252", "latin-1"]
+    for enc in order:
         try:
             return raw.decode(enc)
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode("utf-8", "replace")
 
@@ -225,4 +271,14 @@ def domain_of(value):
         v = urllib.parse.urlsplit(v).netloc
     v = v.split("/")[0].split(":")[0]
     v = re.sub(r"^www\.", "", v)
-    return v if "." in v else ""
+    v = v.rstrip(".")
+    # A host, not a sentence: the catalogue has rows where a phone number or an address
+    # ended up in the domain column, and "ft. wayne, indiana" used to pass because of the dot.
+    if (not v or len(v) > 253 or any(ch.isspace() for ch in v)
+            or re.search(r"[^0-9a-z\u0080-\uffff.-]", v)):
+        return ""
+    labels = v.split(".")
+    if (len(labels) < 2 or len(labels[-1]) < 2
+            or any(not label or label[0] == "-" or label[-1] == "-" for label in labels)):
+        return ""
+    return v

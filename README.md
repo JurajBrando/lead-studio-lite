@@ -43,8 +43,8 @@ inbox permissions, or anyone looking for a managed data vendor.
   duplicates skipped, invalid addresses reported. **An email is optional**: a company with a
   description, a domain or a name is a contact too, and the rows that have no address simply
   cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
-  on disk — type it or press **Browse** for the system file window — streamed and capped, with an
-  optional SQL filter for DuckDB.
+  on disk - type it or press **Browse** for the system file window - streamed row by row with
+  **no size limit**, resumable, with an optional SQL filter for DuckDB.
 - **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) is too big for
   a repository, so it is published as the public dataset
   [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data)
@@ -85,7 +85,8 @@ inbox permissions, or anyone looking for a managed data vendor.
 - **Offers & affiliate links** — add the tools you resell (accounting, ads, social, referrals) with
   their link, keywords and pitch template; leads are matched to the right offer and the email is
   drafted with your link in it. Per-offer connections (link / API key / MCP / webhook), generated
-  offer pages with an affiliate disclosure, and a bundled 30-offer starter pack.
+  offer pages with an affiliate disclosure, and a hard-coded, read-only Upgrades shelf of 29
+  affiliate tools that survives a database reset.
   See [docs/OFFERS.md](docs/OFFERS.md).
 - **Bring your own LLM** — OpenAI, Anthropic (Claude), DeepSeek, Ollama or any OpenAI-compatible
   endpoint, managed as a list with a default and a test button. Providers that share a base URL
