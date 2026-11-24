@@ -1,26 +1,26 @@
 # Lead Studio Lite
 
-**Your own outbound desk: source leads, enrich them, and run several inboxes as one.**
+**Your own outbound desk: 25.2M contacts to start from, every mailbox in one place.**
 
-A local-first sales development app for Windows that covers the whole loop — sourcing, enrichment,
-sequencing, sending and answering — without a subscription. Your leads, your mailboxes and your
-replies live in a SQLite file on your computer.
+Stop renting lead lists. Lead Studio Lite is a local-first sales development app for Windows that
+runs the whole outbound loop — sourcing, enrichment, sequencing, sending and answering — on data
+you own. Every lead, mailbox and reply lives in a SQLite file on your computer.
 
-- **Source** — import CSV, Excel, Parquet, DuckDB or SQLite; pull domains from three open datasets
-  (Common Crawl web graph, registered domains, Certificate Transparency); scrape a site for contact
-  details; or start from the scraped contact table published on Hugging Face.
-- **Enrich** — verify addresses (syntax, typo domains, MX, disposable, role accounts), segment by
-  country, industry, company size, technologies, location and source, and enrich domains against
-  the live Common Crawl index.
-- **Work many inboxes** — add as many mailboxes as you have. The queue rotates across them inside
-  each mailbox's daily cap, and every reply or bounce from every mailbox lands in **one unified
-  inbox** that stops the sequence and flips the lead.
+- **Start from 25.2M contacts** — the scraped contact table `rec_results.duckdb`
+  (domain, company, description, best email, country) is published as the public dataset
+  [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data).
+  Open it in DuckDB, or import a slice straight into the app through *Leads -> Import*.
+- **New domains keep arriving** — the weekly Common Crawl job reads the host index from the Hub
+  as well, so fresh domains land in the Domains tab without any work from you.
+- **Work the list, not just build it** — segment by country, industry, size and tech, verify
+  every address, send multi-step sequences from as many mailboxes as you own, and read every
+  reply and bounce in **one unified inbox** that stops the sequence and flips the lead.
 
 No account, no subscription, no cloud — your list never leaves your computer.
 
 **Python 3.9+ · MIT · ~15,000 lines · no runtime dependencies**
 
-![Dashboard](docs/screenshots/dashboard.png)
+![Lead Studio Lite - your own outbound desk](docs/social-preview.png)
 
 ---
 
@@ -45,8 +45,8 @@ inbox permissions, or anyone looking for a managed data vendor.
   cannot be enrolled in a sequence. Big files (the multi-gigabyte kind) are imported from a path
   on disk - type it or press **Browse** for the system file window - streamed row by row with
   **no size limit**, resumable, with an optional SQL filter for DuckDB.
-- **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`) is too big for
-  a repository, so it is published as the public dataset
+- **Bulk data on Hugging Face** — the scraped contact table (`rec_results.duckdb`, 25.2M rows)
+  is too big for a repository, so it is published as the public dataset
   [Jurajbrando/lead-studio-data](https://huggingface.co/datasets/Jurajbrando/lead-studio-data)
   and linked from *Leads → Bulk data*. Re-publish it with `python tools/upload_bulk_data.py`
   (needs a write token).
